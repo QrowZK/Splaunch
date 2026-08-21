@@ -234,6 +234,50 @@ pub fn base_game(root: &Path) -> Option<GameArchive> {
         .cloned()
 }
 
+// ----------------------------------------------------------------- maps -----
+
+/// Maps present on this machine, by the name a start script uses.
+///
+/// Zero-K downloads maps on demand through the lobby, so the catalogue lists
+/// far more than any install actually has - 343 against a handful. A start
+/// script naming a map that is not here fails at the engine with an error about
+/// the archive, which is a poor way to learn that you needed to play the map
+/// once first.
+///
+/// The name is the filename without its extension, which is what Spring indexes
+/// a map archive under when its own metadata is unreadable, and what the
+/// catalogue's names correspond to once underscores are spaces.
+pub fn installed_maps(root: &Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root.join("maps")) else { return out };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_map = matches!(path.extension().and_then(|e| e.to_str()), Some(e)
+            if e.eq_ignore_ascii_case("sd7")
+                || e.eq_ignore_ascii_case("sdz")
+                || e.eq_ignore_ascii_case("smf"));
+        if !is_map {
+            continue;
+        }
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            out.push(stem.to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Whether a catalogue name matches an installed archive.
+///
+/// The catalogue says "Comet Catcher Redux" and the file on disk is
+/// `comet_catcher_redux.sd7`, so neither case nor the spaces can be trusted.
+pub fn map_is_installed(installed: &[String], name: &str) -> bool {
+    let normal = |s: &str| s.to_ascii_lowercase().replace([' ', '_', '-'], "");
+    let wanted = normal(name);
+    installed.iter().any(|m| normal(m) == wanted)
+}
+
 // ------------------------------------------------------------------ AIs -----
 
 /// Skirmish AIs the install can run, by the short name a start script uses.
@@ -454,6 +498,8 @@ pub struct GameInfo {
     pub engines: Vec<String>,
     pub games: Vec<GameArchive>,
     pub ais: Vec<String>,
+    /// Maps actually on this machine, as opposed to the 343 in the catalogue.
+    pub maps: Vec<String>,
     /// The defaults the editor should start from, already chosen.
     pub engine: Option<String>,
     pub game: Option<String>,
@@ -479,6 +525,7 @@ pub fn game_info(root: &Path) -> GameInfo {
         engine: engines.first().cloned(),
         game: base_game(root).map(|g| g.name),
         ais: skirmish_ais(root),
+        maps: installed_maps(root),
         engines,
         games,
     }
@@ -616,6 +663,16 @@ return modinfo"#;
     }
 
     #[test]
+    fn a_catalogue_name_matches_the_file_on_disk() {
+        // The catalogue says "Comet Catcher Redux"; the archive is
+        // comet_catcher_redux.sd7. Neither case nor the spaces survive.
+        let installed = vec!["comet_catcher_redux".to_string(), "Glacies 1.3".to_string()];
+        assert!(map_is_installed(&installed, "Comet Catcher Redux"));
+        assert!(map_is_installed(&installed, "Glacies 1.3"));
+        assert!(!map_is_installed(&installed, "Some Other Map"));
+    }
+
+    #[test]
     fn nothing_here_fails_when_zero_k_is_absent() {
         // The editor has to open on a machine with no install, and say so,
         // rather than refusing to start.
@@ -623,6 +680,7 @@ return modinfo"#;
         assert!(engine_versions(nowhere).is_empty());
         assert!(game_archives(nowhere).is_empty());
         assert!(skirmish_ais(nowhere).is_empty());
+        assert!(installed_maps(nowhere).is_empty());
         let info = game_info(nowhere);
         assert!(info.engine.is_none());
         assert!(info.game.is_none());

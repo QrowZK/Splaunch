@@ -22,6 +22,7 @@ pub fn run() {
             scenario::spsc_test,
             scenario::spsc_save,
             scenario::spsc_open,
+            scenario::spsc_example,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Splaunch");

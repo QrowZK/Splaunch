@@ -7,7 +7,7 @@ import Objectives from "./Objectives.jsx";
 import Teams, { colourOf } from "./Teams.jsx";
 import Selection from "./Selection.jsx";
 import {
-  scenarioProblems, saveScenario, openScenario,
+  scenarioProblems, saveScenario, openScenario, exampleScenario, mapIsInstalled,
   FORMAT_VERSION, DEFAULT_MAP_ELMOS,
 } from "../net/splaunch.ts";
 
@@ -234,8 +234,20 @@ export default function SplaunchScreen({
     onTest?.(scenario);
   };
 
-  const shownMaps = maps.filter(m =>
-    !mapQuery.trim() || m.name.toLowerCase().includes(mapQuery.trim().toLowerCase()));
+  /* Installed maps first. Zero-K downloads maps on demand, so the catalogue
+     lists 343 and an install has a handful - picking one you do not have gets
+     you an error from the engine about an archive, which is a poor way to find
+     out you needed to play the map once first. */
+  const onDisk = install?.maps ?? [];
+  const shownMaps = React.useMemo(() => {
+    const q = mapQuery.trim().toLowerCase();
+    return maps
+      .filter(m => !q || m.name.toLowerCase().includes(q))
+      .map(m => ({ ...m, installed: mapIsInstalled(onDisk, m.name) }))
+      .sort((a, b) => (b.installed ? 1 : 0) - (a.installed ? 1 : 0));
+  }, [maps, mapQuery, onDisk]);
+
+  const chosenMissing = map && onDisk.length > 0 && !mapIsInstalled(onDisk, map);
 
   const chooseMap = m => {
     setMap(m.name);
@@ -248,6 +260,7 @@ export default function SplaunchScreen({
   };
 
   const openFile = () => openScenario().then(sc => { if (sc) load(sc); }, () => {});
+  const openExample = () => exampleScenario().then(load, () => {});
 
   if (!map) {
     return (
@@ -257,6 +270,7 @@ export default function SplaunchScreen({
           {onBack && <Button variant="ghost" size="sm" icon="arrow-left" onClick={onBack}>Apps</Button>}
           <span style={label}>SPLAUNCH — NEW SCENARIO</span>
           <span style={{ flex: 1 }} />
+          <Button variant="secondary" size="sm" onClick={openExample}>Open the example</Button>
           <Button variant="secondary" size="sm" icon="folder" onClick={openFile}>Open</Button>
         </div>
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "var(--sp-7)" }}>
@@ -279,8 +293,18 @@ export default function SplaunchScreen({
               {shownMaps.slice(0, 48).map(m => (
                 <button key={m.name} type="button" onClick={() => chooseMap(m)} aria-label={m.name}
                   style={{ cursor: "pointer", background: "transparent", border: 0,
-                    padding: 0, textAlign: "left", color: "inherit", font: "inherit" }}>
+                    padding: 0, textAlign: "left", color: "inherit", font: "inherit",
+                    opacity: onDisk.length && !m.installed ? 0.5 : 1, position: "relative" }}>
                   <MapImage map={m.name} kind="minimap" ratio="1" caption resourceId={m.resourceId} />
+                  {onDisk.length > 0 && !m.installed && (
+                    <span style={{ position: "absolute", top: 6, left: 6,
+                      background: "var(--surface-base)", color: "var(--text-faint)",
+                      font: "var(--w-semibold) var(--size-micro)/1 var(--font-core)",
+                      letterSpacing: "var(--track-label)", textTransform: "uppercase",
+                      padding: "3px 5px", border: "1px solid var(--w-12)" }}>
+                      Not installed
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -300,6 +324,9 @@ export default function SplaunchScreen({
             color: "var(--text-hi)", background: "transparent", border: 0, outline: "none",
             width: 220, padding: "var(--sp-2) 0" }} />
         <span style={{ ...mono, color: "var(--text-faint)" }}>{map}</span>
+        {chosenMissing && (
+          <Badge tone="warn">Map not installed</Badge>
+        )}
         <Button variant="ghost" size="sm"
           onClick={() => { setMap(""); setSel(null); }}>Change map</Button>
         <span style={{ flex: 1 }} />

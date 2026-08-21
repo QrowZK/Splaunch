@@ -104,8 +104,23 @@ export interface GameInfo {
   engines: string[];
   games: GameArchive[];
   ais: string[];
+  /** Maps actually on this machine, as opposed to the 343 in the catalogue. */
+  maps: string[];
   engine: string | null;
   game: string | null;
+}
+
+/**
+ * Whether a catalogue name matches an installed archive.
+ *
+ * The catalogue says "Comet Catcher Redux" and the file on disk is
+ * `comet_catcher_redux.sd7`, so neither case nor the spaces can be trusted.
+ * Mirrors `game::map_is_installed`.
+ */
+export function mapIsInstalled(installed: string[], name: string): boolean {
+  const normal = (s: string) => s.toLowerCase().replace(/[ _-]/g, "");
+  const wanted = normal(name);
+  return installed.some(m => normal(m) === wanted);
 }
 
 /** What the install contains: engines, game archives, AIs. */
@@ -164,6 +179,12 @@ export async function saveScenario(scenario: Scenario): Promise<string | null> {
 export async function openScenario(): Promise<Scenario | null> {
   if (!inTauri()) throw new Error("Opening needs the desktop app.");
   return invoke<Scenario | null>("spsc_open");
+}
+
+/** The scenario Splaunch ships with, bundled into the binary. */
+export async function exampleScenario(): Promise<Scenario> {
+  if (!inTauri()) throw new Error("Opening needs the desktop app.");
+  return invoke<Scenario>("spsc_example");
 }
 
 /** What the engine is doing. */

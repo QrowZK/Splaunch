@@ -1,8 +1,8 @@
 //! Splaunch: Zero-K scenarios, and the start script they compile to.
 //!
-//! `docs/DESIGN.md` has the research this is built on. The finding this module is built
-//! on: **a Zero-K scenario's most portable form is a start script, not a file
-//! format.** The engine reads `script.txt`; units, teams, AIs and modoptions are
+//! `docs/SCENARIOS.md` is how to make one and `docs/MISSION-MODEL.md` is how the
+//! game reads it. The finding this module is built on: **a Zero-K scenario's most
+//! portable form is a start script, not a file format.** The engine reads `script.txt`; units, teams, AIs and modoptions are
 //! all expressible there against unmodified Zero-K, with no archive to build and
 //! no server to publish to.
 //!
@@ -844,6 +844,89 @@ mod tests {
         assert_eq!(from_json(&to_json(&sc).unwrap()).unwrap(), sc);
     }
 
+    /// The scenario shipped in `examples/`, which is the one thing here that a
+    /// person is invited to open and play.
+    const EXAMPLE: &str = include_str!("../../examples/first-contact.splaunch");
+
+    #[test]
+    fn the_shipped_example_compiles_to_a_script() {
+        /* A broken example is worse than none: it is the first thing somebody
+           opens, and it would teach them the tool does not work.
+
+           Its `game` is empty on purpose - which Zero-K it runs against is a
+           property of the machine, not of the scenario, and the editor fills it
+           in from the install. So that is what happens here too. */
+        let mut sc = from_json(EXAMPLE).expect("the example does not parse");
+        assert!(sc.game.is_empty(), "the example should not pin a Zero-K version");
+        assert_eq!(
+            problems(&sc),
+            vec!["No Zero-K version chosen - the game cannot start without one."]
+        );
+
+        sc.game = "Zero-K v1.14.8.0".into();
+        assert_eq!(problems(&sc), Vec::<String>::new(), "{:?}", problems(&sc));
+
+        let script = write_script(&sc, "Player").unwrap();
+        assert!(script.contains("Mapname=Comet Catcher Redux;"));
+        assert!(script.contains("GameType=Zero-K v1.14.8.0;"));
+        let lua = modoption_lua(&script, "bonusobjectiveconfig");
+        assert!(lua.contains("corcom1"), "{lua}");
+        assert!(lua.contains("satisfyUntilTime=900"), "{lua}");
+        let brief = modoption_lua(&script, "planetmissioninformationtext");
+        assert!(brief.contains("did not come back"), "{brief}");
+    }
+
+    #[test]
+    fn every_unit_in_the_example_is_a_unit_zero_k_has() {
+        /* The failure this guards against is the one that made the old palette
+           useless: a name that looks plausible, spawns nothing, and takes an
+           evening to notice. The gadget resolves placed units and objective
+           unit types through UnitDefNames and silently drops what it cannot
+           find. */
+        let sc = from_json(EXAMPLE).unwrap();
+        let roster = crate::game::vendored_units();
+        let known = |name: &str| roster.iter().any(|u| u.name == name);
+
+        for unit in &sc.units {
+            assert!(known(&unit.unit), "{} is not a Zero-K unit", unit.unit);
+        }
+        for feature in &sc.features {
+            let base = feature.name.strip_suffix("_dead").unwrap_or(&feature.name);
+            assert!(known(base), "{} is not a Zero-K unit's wreck", feature.name);
+        }
+        for objective in &sc.goals {
+            for name in match &objective.goal {
+                Goal::SurviveUntil { units, .. } => units.clone(),
+                Goal::BuildBy { unit, .. }
+                | Goal::HaveAtOnce { unit, .. }
+                | Goal::DestroyAllBy { unit, .. }
+                | Goal::KillCount { unit, .. } => vec![unit.clone()],
+                Goal::WinBefore { .. } => vec![],
+            } {
+                assert!(known(&name), "objective names {name}, which is not a Zero-K unit");
+            }
+        }
+        for defeat in &sc.defeat {
+            for name in &defeat.vital_units {
+                assert!(known(name), "defeat condition names {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_example_can_be_both_won_and_lost() {
+        // A scenario with no way to lose is a sandbox, and one with no way to
+        // win is a diorama. Both sides need a defeat condition.
+        let sc = from_json(EXAMPLE).unwrap();
+        let sides: std::collections::HashSet<u32> = sc.teams.iter().map(|t| t.ally).collect();
+        for side in sides {
+            assert!(
+                sc.defeat.iter().any(|d| d.ally == side && !d.vital_units.is_empty()),
+                "side {side} has no way to be beaten"
+            );
+        }
+    }
+
     #[test]
     fn a_scenario_from_a_newer_splaunch_is_refused_by_name() {
         /* Half-reading it would drop whatever the newer version added, and the
@@ -1003,9 +1086,9 @@ mod tests {
 
     #[test]
     fn our_script_has_the_sections_the_engine_expects() {
-        /* The single biggest unknown in docs/SCENARIO-EDITOR.md is whether a
-           script we write actually launches. Nothing here launches anything -
-           that still wants doing by hand - but a script missing a section the
+        /* The single biggest unknown is still whether a script we write
+           actually launches. Nothing here launches anything - that wants a
+           machine with Zero-K on it - but a script missing a section the
            engine's own one has would fail for a reason we can find now rather
            than at the whistle. */
         let ours = write_script(&sample(), "Qrow").unwrap();
@@ -1133,9 +1216,50 @@ pub fn spsc_script(scenario: Scenario, player: String) -> Result<String, String>
 }
 
 /// What is wrong with it, for the count in the header.
+///
+/// `problems` itself is pure, so it can be tested without an install. The
+/// checks that need to know about *this* machine are added here, on top.
 #[tauri::command]
-pub fn spsc_problems(scenario: Scenario) -> Vec<String> {
-    problems(&scenario)
+pub fn spsc_problems(game: tauri::State<'_, crate::launch::Game>, scenario: Scenario) -> Vec<String> {
+    let mut out = problems(&scenario);
+    out.extend(install_problems(game, &scenario));
+    out
+}
+
+/// What is wrong with it that only this machine can answer.
+///
+/// Zero-K downloads maps on demand, so the catalogue lists 343 and an install
+/// has a handful. Naming one that is not here fails at the engine with an error
+/// about a missing archive, which is a poor way to learn you needed to play the
+/// map once first.
+///
+/// Silent when there is no install or no map list: a machine that cannot answer
+/// should not invent a complaint.
+fn install_problems(game: tauri::State<'_, crate::launch::Game>, s: &Scenario) -> Vec<String> {
+    let Some(root) = game.install_root() else { return Vec::new() };
+    let installed = crate::game::installed_maps(&root);
+    if installed.is_empty() || s.map.trim().is_empty() {
+        return Vec::new();
+    }
+    if crate::game::map_is_installed(&installed, &s.map) {
+        return Vec::new();
+    }
+    vec![format!(
+        "The map {} is not installed. Play it once in the Zero-K lobby to download it.",
+        s.map
+    )]
+}
+
+/// The scenario Splaunch ships with.
+///
+/// Bundled into the binary rather than installed beside it: a portable build is
+/// one `Splaunch.exe` that people unzip anywhere, and an example that only
+/// works when a folder happens to be next to it is an example that mostly does
+/// not work. Its `game` is filled in by the editor from whatever Zero-K is on
+/// the machine.
+#[tauri::command]
+pub fn spsc_example() -> Result<Scenario, String> {
+    from_json(include_str!("../../examples/first-contact.splaunch"))
 }
 
 /// Save a scenario, asking where.

@@ -92,6 +92,19 @@ pub struct LaunchPreview {
     pub game: Option<String>,
 }
 
+impl Game {
+    /// The install this session is using, if there is one.
+    ///
+    /// Resolved rather than remembered: the override may have been set after
+    /// the last detection, and a missing install is a `None` rather than an
+    /// error because the callers of this ask questions that are fine to leave
+    /// unanswered.
+    pub fn install_root(&self) -> Option<PathBuf> {
+        let root = self.root.lock().ok().and_then(|r| r.clone());
+        install::detect_with(root.as_deref()).ok().map(|i| i.root)
+    }
+}
+
 /// Find Zero-K, optionally somewhere the user pointed us.
 #[tauri::command]
 pub fn sp_locate_install(game: State<'_, Game>, root: Option<String>) -> Result<Install, String> {

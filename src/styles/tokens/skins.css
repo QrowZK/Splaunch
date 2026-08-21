@@ -17,7 +17,7 @@
  * values on purpose: they are the values map imagery is composited against, and
  * map art is dark whatever the app's ground is. The consequence is that
  * anything reading the base ramp directly does not follow a skin - see
- * docs/SKINS.md for the list that is still outstanding in the vendored DS.
+ * Shiro's own docs for the list that is still outstanding in the vendored DS.
  */
 
 [data-skin="vellum"] {

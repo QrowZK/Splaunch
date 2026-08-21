@@ -1,5 +1,12 @@
 # A scenario editor for Zero-K
 
+> **Note, added at handover.** This is the original research, written while
+> Splaunch was still a screen inside the Shiro lobby. Its cross-references to
+> `ARCHITECTURE.md`, `MODOPTIONS-EDITOR.md` and `PLUGINS.md` point at Shiro's
+> documents, which are in that repository rather than this one. For what
+> Splaunch does now, read `SCENARIOS.md`; for how Zero-K reads it,
+> `MISSION-MODEL.md`, which is later and more precise than section 2 here.
+
 Scope only. Nothing here is built.
 
 The ask: a new tool in the spirit of SpringBoard, rather than an integration of

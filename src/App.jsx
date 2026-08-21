@@ -49,6 +49,7 @@ export default function App() {
           root: preview.install?.root ?? "",
           source: preview.install?.source ?? "",
           ais: info.ais ?? [],
+          maps: info.maps ?? [],
           engines: info.engines ?? [],
           games: info.games ?? [],
         });
