@@ -39,9 +39,34 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
 
+      # The version lives in tauri.conf.json, so stamp it there too. Naming only
+      # the zip after the build number leaves an installer inside that reports a
+      # different version than the file it arrived in.
+      - name: Stamp the version
+        shell: pwsh
+        run: |
+          $conf = "src-tauri/tauri.conf.json"
+          $json = Get-Content $conf -Raw | ConvertFrom-Json
+          $json.version = $env:SPLAUNCH_VERSION
+          $json | ConvertTo-Json -Depth 32 | Set-Content $conf -Encoding utf8
+          "Building $env:SPLAUNCH_VERSION"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `tauri build`, not `cargo build`: the packaging step below wants the NSIS
+      # installer and only the bundler produces one. The bare cargo invocation
+      # also could not find Cargo.toml, which lives in src-tauri rather than at
+      # the repository root.
       - name: Build the desktop app
-        run: cargo build --release -p splaunch
+        run: npx tauri build --bundles nsis
 
       # A zip rather than a bare .exe: it is what an installer-less download
       # should be, and it leaves room for the assets and licence to travel with
