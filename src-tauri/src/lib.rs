@@ -1,4 +1,5 @@
 mod customkey;
+mod game;
 mod install;
 mod launch;
 mod maps;
@@ -12,6 +13,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             launch::sp_locate_install,
             launch::sp_launch_preview,
+            launch::sp_game_info,
+            launch::sp_units,
             maps::sp_maps,
             scenario::spsc_script,
             scenario::spsc_problems,

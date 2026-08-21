@@ -22,6 +22,7 @@ serde_json = "1"
 # one call and nothing to overlap it with; rustls rather than native TLS so a
 # Linux build does not need OpenSSL.
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
 
 [profile.release]
 strip = true
