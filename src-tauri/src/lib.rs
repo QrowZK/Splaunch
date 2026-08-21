@@ -1,3 +1,4 @@
+mod customkey;
 mod install;
 mod launch;
 mod maps;
