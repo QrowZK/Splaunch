@@ -68,19 +68,33 @@ jobs:
       - name: Build the desktop app
         run: npx tauri build --bundles nsis
 
-      # A zip rather than a bare .exe: it is what an installer-less download
-      # should be, and it leaves room for the assets and licence to travel with
-      # the binary without changing anything downstream.
+      # A zip of the portable executable, not of the installer. Shiro's launcher
+      # unpacks this and runs what is inside, so what is inside has to be the
+      # program - an installer would install rather than launch. The NSIS
+      # installer is published beside it for people who want one.
+      #
+      # The staging directory is deliberately not called "dist": that is where
+      # Vite writes the frontend, and the previous version of this step zipped
+      # the whole web build up with the installer by accident.
       - name: Package
         shell: pwsh
         run: |
-          $out = "dist"
-          New-Item -ItemType Directory -Force $out | Out-Null
-          Copy-Item "src-tauri/target/release/bundle/nsis/*.exe" $out
-          if (Test-Path "LICENSE") { Copy-Item "LICENSE" $out }
-          if (Test-Path "README.md") { Copy-Item "README.md" $out }
+          $stage = "package"
+          Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $stage | Out-Null
+
+          # Tauri names the binary after the crate; the launcher expects the
+          # product name, so it is renamed on the way in rather than the
+          # catalogue having to know about Cargo.
+          $built = "src-tauri/target/release/splaunch.exe"
+          if (-not (Test-Path $built)) { throw "no executable at $built" }
+          Copy-Item $built (Join-Path $stage "Splaunch.exe")
+
+          if (Test-Path "LICENSE") { Copy-Item "LICENSE" $stage }
+          if (Test-Path "README.md") { Copy-Item "README.md" $stage }
+
           $zip = "Splaunch_${env:SPLAUNCH_VERSION}_x64.zip"
-          Compress-Archive -Path "$out/*" -DestinationPath $zip -Force
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
 
           # The hash is published beside the zip because whoever installs this
           # should be able to check it without trusting the download - Shiro's
@@ -88,6 +102,12 @@ jobs:
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
           "$hash  $zip" | Set-Content "$zip.sha256" -Encoding utf8
           "SPLAUNCH_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          if ($setup) {
+            Copy-Item $setup.FullName "."
+            "SPLAUNCH_SETUP=$($setup.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
           "sha256: $hash"
 
       - uses: actions/upload-artifact@v4
@@ -96,6 +116,7 @@ jobs:
           path: |
             Splaunch_*.zip
             Splaunch_*.zip.sha256
+            Splaunch_*-setup.exe
           if-no-files-found: error
 
       # Updated in place rather than deleted and recreated: a delete that fails
@@ -108,11 +129,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $assets = @($env:SPLAUNCH_ZIP, "$($env:SPLAUNCH_ZIP).sha256")
+          if ($env:SPLAUNCH_SETUP) { $assets += $env:SPLAUNCH_SETUP }
           $notes = @"
           Rolling development build of Splaunch, from commit ${{ github.sha }}.
 
-          Unpack and run the installer inside. Unsigned, so Windows SmartScreen will
-          warn about an unknown publisher.
+          The zip holds a portable Splaunch.exe - unpack it anywhere and run it. The
+          setup .exe beside it installs instead, if you would rather.
+          Both are unsigned, so Windows SmartScreen will warn about an unknown
+          publisher.
 
           The .sha256 beside the zip is the hash to check it against.
           "@
