@@ -47,8 +47,19 @@ travels in the script.
 - **Wrecks** tab places features. A feature named `<unit>_dead` is reclaimable,
   and Zero-K wires it up to resurrect back into the unit it came from, which is
   free scenery with a purpose.
+- **Marks** labels a place. The player sees them on the map from the start.
 - Click a placed unit to edit it. Facing, stance, how far built it is,
   veterancy, invincibility, and whether Gaia owns it instead of a team.
+
+Select a unit and you can also give it a **patrol**: click *Draw a route*, then
+click the map, and it walks those points for ever. This is as close as the
+modern mission system gets to scripted behaviour - there is no trigger graph to
+hang orders on, so a sentry walking a line is built out of a patrol. *Patrol on
+the spot* is the one-click version.
+
+A unit can also be set to exist **only at some difficulties**, which is how one
+scenario becomes three. The difficulty it is played at is on the Teams tab; the
+example's second Lotus turret only appears on Hard.
 
 Nothing here knows where the water is. Positions are placed against the minimap,
 so a land unit can be dropped in the sea and nothing will stop you. Check when

@@ -1,5 +1,5 @@
 import React from "react";
-import { Select, Input, IconButton, Checkbox, EmptyState } from "../ds/shiro.js";
+import { Button, Select, Input, IconButton, Checkbox, EmptyState } from "../ds/shiro.js";
 import { label, hint, mono } from "./parts.jsx";
 import { colourOf } from "./Teams.jsx";
 
@@ -29,7 +29,16 @@ function num(value) {
   return value === "" || value == null ? null : Number(value);
 }
 
-export default function Selection({ selected, kind, teams, roster, onPatch, onDelete }) {
+const DIFFICULTIES = [
+  { value: "", label: "Every difficulty" },
+  { value: "1", label: "Easy" },
+  { value: "2", label: "Normal" },
+  { value: "3", label: "Hard" },
+];
+
+export default function Selection({
+  selected, kind, teams, roster, onPatch, onDelete, routing, onRoute,
+}) {
   if (!selected) {
     /* On screen more than any other state in the tool, so it says what to do
        rather than sitting blank. */
@@ -43,6 +52,27 @@ export default function Selection({ selected, kind, teams, roster, onPatch, onDe
   const def = roster.find(u => u.name === selected.unit);
   const box = { display: "flex", flexDirection: "column", gap: "var(--sp-5)",
     padding: "var(--sp-6) var(--sp-5)" };
+
+  if (kind === "marker") {
+    return (
+      <div style={box}>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-4)" }}>
+          <span style={{ font: "var(--text-heading)", color: "var(--text-hi)", flex: 1 }}>Mark</span>
+          <IconButton icon="x" label="Delete" size="sm" onClick={onDelete} />
+        </div>
+        <Input label="Text" size="sm" value={selected.text}
+          onChange={e => onPatch({ text: e.target.value })} />
+        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr",
+          gap: "var(--sp-3) var(--sp-5)", alignItems: "baseline" }}>
+          <span style={label}>Position</span>
+          <span style={mono}>{Math.round(selected.x)}, {Math.round(selected.z)} elmos</span>
+        </div>
+        <span style={hint}>
+          Shown on the player's map from the moment the mission starts.
+        </span>
+      </div>
+    );
+  }
 
   if (kind === "feature") {
     const resurrectable = /_dead$/i.test(selected.name);
@@ -130,6 +160,57 @@ export default function Selection({ selected, kind, teams, roster, onPatch, onDe
       <Checkbox label="Flatten the ground under it" checked={selected.terraformHeight != null}
         hint="So a building on a slope still sits flat."
         onChange={e => onPatch({ terraformHeight: e.target.checked ? 0 : null })} />
+
+      {/* The closest the modern mission system comes to scripted behaviour.
+          There is no trigger graph to hang orders off, so a route walked for
+          ever is what a sentry or a sweep has to be built out of. */}
+      <div style={{ borderTop: "1px solid var(--w-06)", paddingTop: "var(--sp-5)",
+        display: "flex", flexDirection: "column", gap: "var(--sp-4)" }}>
+        <span style={label}>Patrol</span>
+        {(selected.patrol?.length ?? 0) > 0 ? (
+          <>
+            <span style={mono}>
+              {selected.patrol.length} point{selected.patrol.length === 1 ? "" : "s"}
+              {selected.patrol.length === 1 ? " — needs two to be a route" : ""}
+            </span>
+            <div style={{ display: "flex", gap: "var(--sp-3)" }}>
+              <Button size="sm" variant={routing ? "primary" : "secondary"}
+                onClick={() => onRoute(!routing)}>
+                {routing ? "Done" : "Add points"}
+              </Button>
+              <Button size="sm" variant="secondary"
+                onClick={() => onPatch({ patrol: [] })}>Clear</Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <Button size="sm" variant={routing ? "primary" : "secondary"}
+              onClick={() => onRoute(!routing)}>
+              {routing ? "Click the map, then Done" : "Draw a route"}
+            </Button>
+            <Checkbox label="Patrol on the spot" checked={!!selected.selfPatrol}
+              hint="Faces the middle of the map. A route replaces this."
+              onChange={e => onPatch({ selfPatrol: e.target.checked })} />
+          </>
+        )}
+      </div>
+
+      <div style={{ borderTop: "1px solid var(--w-06)", paddingTop: "var(--sp-5)",
+        display: "flex", flexDirection: "column", gap: "var(--sp-4)" }}>
+        <span style={label}>Only exists on</span>
+        <Select size="sm" label="At least"
+          value={selected.difficultyAtLeast == null ? "" : String(selected.difficultyAtLeast)}
+          onChange={e => onPatch({ difficultyAtLeast: num(e.target.value) })}
+          options={DIFFICULTIES} />
+        <Select size="sm" label="At most"
+          value={selected.difficultyAtMost == null ? "" : String(selected.difficultyAtMost)}
+          onChange={e => onPatch({ difficultyAtMost: num(e.target.value) })}
+          options={DIFFICULTIES} />
+        <span style={hint}>
+          One scenario can be three. The difficulty it is played at is set on the
+          Teams tab.
+        </span>
+      </div>
     </div>
   );
 }

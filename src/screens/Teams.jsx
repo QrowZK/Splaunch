@@ -23,7 +23,9 @@ export function colourOf(teamId) {
   return TEAM_COLOURS[teamId % TEAM_COLOURS.length];
 }
 
-export default function Teams({ teams, setTeams, defeat, setDefeat, ais, roster, units }) {
+export default function Teams({
+  teams, setTeams, defeat, setDefeat, ais, roster, units, difficulty, setDifficulty,
+}) {
   const addTeam = () => {
     const id = teams.length ? Math.max(...teams.map(t => t.id)) + 1 : 0;
     setTeams(v => [...v, { id, ally: id, ai: ais[0] ?? "NullAI", colour: colourOf(id).rgb }]);
@@ -43,7 +45,22 @@ export default function Teams({ teams, setTeams, defeat, setDefeat, ais, roster,
   return (
     <div style={{ padding: "var(--sp-5)", display: "flex", flexDirection: "column",
       gap: "var(--sp-5)" }}>
-      <div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-4)" }}>
+        <span style={label}>Difficulty</span>
+        <Select size="sm" value={String(difficulty)}
+          onChange={e => setDifficulty(Number(e.target.value))}
+          options={[
+            { value: "1", label: "Easy" },
+            { value: "2", label: "Normal" },
+            { value: "3", label: "Hard" },
+          ]} />
+        <span style={hint}>
+          Units can be set to exist only at some difficulties, on the Selection
+          tab, so one scenario can be three.
+        </span>
+      </div>
+
+      <div style={{ borderTop: "1px solid var(--w-06)", paddingTop: "var(--sp-5)" }}>
         <span style={label}>Teams</span>
         <span style={{ ...hint, display: "block", marginTop: "var(--sp-2)" }}>
           One of them has to be you. Teams sharing a side are allies.

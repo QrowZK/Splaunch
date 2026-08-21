@@ -8,7 +8,7 @@ import Teams, { colourOf } from "./Teams.jsx";
 import Selection from "./Selection.jsx";
 import {
   scenarioProblems, saveScenario, openScenario, exampleScenario, mapIsInstalled,
-  FORMAT_VERSION, DEFAULT_MAP_ELMOS,
+  FORMAT_VERSION, DEFAULT_MAP_ELMOS, DEFAULT_DIFFICULTY,
 } from "../net/splaunch.ts";
 
 /* Splaunch. Place units on a map, set objectives, press Test.
@@ -31,7 +31,7 @@ function featureNames(roster) {
 
 function Palette({ mode, setMode, query, setQuery, brush, setBrush, roster, source }) {
   const items = React.useMemo(
-    () => (mode === "unit" ? roster : featureNames(roster)),
+    () => (mode === "unit" ? roster : mode === "feature" ? featureNames(roster) : []),
     [mode, roster],
   );
 
@@ -60,6 +60,8 @@ function Palette({ mode, setMode, query, setQuery, brush, setBrush, roster, sour
             onClick={() => setMode("unit")}>Units</Button>
           <Button size="sm" block variant={mode === "feature" ? "primary" : "secondary"}
             onClick={() => setMode("feature")}>Wrecks</Button>
+          <Button size="sm" block variant={mode === "marker" ? "primary" : "secondary"}
+            onClick={() => setMode("marker")}>Marks</Button>
         </div>
         <Input label="Palette" icon="search" placeholder="Glaive, cloakraid, Defences"
           value={query} onChange={e => setQuery(e.target.value)} />
@@ -93,7 +95,10 @@ function Palette({ mode, setMode, query, setQuery, brush, setBrush, roster, sour
             </div>
           </div>
         ))}
-        {groups.length === 0 && (
+        {mode === "marker" ? (
+          <EmptyState icon="map" title="Marks."
+            body="Click the map to label a place. The player sees them from the start." />
+        ) : groups.length === 0 && (
           <EmptyState icon="search" title="Nothing matches that."
             body="Search by what a unit is called, or by what the engine calls it." />
         )}
@@ -124,6 +129,9 @@ export default function SplaunchScreen({
   const [notes, setNotes] = React.useState([]);
   const [briefing, setBriefing] = React.useState("");
   const [defeat, setDefeat] = React.useState([]);
+  const [markers, setMarkers] = React.useState([]);
+  const [difficulty, setDifficulty] = React.useState(DEFAULT_DIFFICULTY);
+  const [routing, setRouting] = React.useState(false);
   const [teams, setTeams] = React.useState([
     { id: 0, ally: 0, ai: null, colour: colourOf(0).rgb },
     { id: 1, ally: 1, ai: "NullAI", colour: colourOf(1).rgb },
@@ -169,7 +177,10 @@ export default function SplaunchScreen({
     briefing: briefing.trim() ? briefing : null,
     defeat,
     mapElmos,
-  }), [name, map, install, teams, units, notes, goals, features, briefing, defeat, mapElmos]);
+    markers,
+    difficulty,
+  }), [name, map, install, teams, units, notes, goals, features, briefing, defeat,
+    mapElmos, markers, difficulty]);
 
   /* The Rust side is the authority on what is wrong. The editor used to keep
      its own list, which drifted: a scenario could pass every check an author
@@ -190,42 +201,59 @@ export default function SplaunchScreen({
     setNotes(sc.objectives ?? []);
     setBriefing(sc.briefing ?? "");
     setDefeat(sc.defeat ?? []);
+    setMarkers((sc.markers ?? []).map((m, i) => ({ ...m, key: `m${i}` })));
+    setDifficulty(sc.difficulty || DEFAULT_DIFFICULTY);
     setTeams(sc.teams?.length ? sc.teams : teams);
     setSel(null);
+    setRouting(false);
   };
 
   const place = e => {
     const box = boardRef.current?.getBoundingClientRect();
-    if (!box || !brush) return;
+    if (!box) return;
     const x = Math.round(Math.min(1, Math.max(0, (e.clientX - box.left) / box.width)) * mapElmos);
     const z = Math.round(Math.min(1, Math.max(0, (e.clientY - box.top) / box.height)) * mapElmos);
-    const key = `${mode}${Date.now()}`;
-    if (mode === "feature") {
-      setFeatures(v => [...v, { name: brush, x, z, facing: null, key }]);
-    } else {
-      setUnits(v => [...v, { unit: brush, team, x, z, key }]);
+
+    /* Drawing a route takes over the map: while it is on, a click adds a point
+       to the selected unit's patrol rather than placing anything new. */
+    if (routing && sel?.kind === "unit") {
+      setUnits(v => v.map(u =>
+        u.key === sel.key ? { ...u, patrol: [...(u.patrol ?? []), [x, z]] } : u));
+      return;
     }
-    setSel({ kind: mode, key });
+
+    const key = `${mode}${Date.now()}`;
+    if (mode === "marker") {
+      setMarkers(v => [...v, { x, z, text: `Mark ${v.length + 1}`, key }]);
+      setSel({ kind: "marker", key });
+    } else if (mode === "feature") {
+      if (!brush) return;
+      setFeatures(v => [...v, { name: brush, x, z, facing: null, key }]);
+      setSel({ kind: "feature", key });
+    } else {
+      if (!brush) return;
+      setUnits(v => [...v, { unit: brush, team, x, z, key }]);
+      setSel({ kind: "unit", key });
+    }
     setTab("selection");
   };
 
-  const selected = sel
-    ? (sel.kind === "feature"
-      ? features.find(f => f.key === sel.key)
-      : units.find(u => u.key === sel.key))
-    : null;
+  const pool = { unit: units, feature: features, marker: markers };
+  const selected = sel ? pool[sel.kind]?.find(x => x.key === sel.key) ?? null : null;
+
+  const setterFor = kind =>
+    kind === "feature" ? setFeatures : kind === "marker" ? setMarkers : setUnits;
 
   const patchSelected = next => {
     if (!sel) return;
-    const apply = v => v.map(x => (x.key === sel.key ? { ...x, ...next } : x));
-    if (sel.kind === "feature") setFeatures(apply); else setUnits(apply);
+    setterFor(sel.kind)(v => v.map(x => (x.key === sel.key ? { ...x, ...next } : x)));
   };
 
   const deleteSelected = () => {
     if (!sel) return;
-    const drop = v => v.filter(x => x.key !== sel.key);
-    if (sel.kind === "feature") setFeatures(drop); else setUnits(drop);
+    setterFor(sel.kind)(v => v.filter(x => x.key !== sel.key));
     setSel(null);
+    setRouting(false);
   };
 
   const test = () => {
@@ -363,6 +391,32 @@ export default function SplaunchScreen({
               <MapImage map={map} kind="minimap" ratio="1" saturate={0.7}
                 style={{ position: "absolute", inset: 0 }} />
 
+              {/* Patrol routes, under everything so the pieces stay clickable. */}
+              <svg viewBox={`0 0 ${mapElmos} ${mapElmos}`} preserveAspectRatio="none"
+                style={{ position: "absolute", inset: 0, width: "100%", height: "100%",
+                  pointerEvents: "none" }}>
+                {units.filter(u => (u.patrol?.length ?? 0) > 1).map(u => (
+                  <polyline key={u.key}
+                    points={[[u.x, u.z], ...u.patrol].map(p => p.join(",")).join(" ")}
+                    fill="none" stroke={u.neutral ? "#8b8b8b" : colourOf(u.team).css}
+                    strokeWidth={mapElmos / 400} strokeDasharray={`${mapElmos / 120}`}
+                    opacity={0.85} />
+                ))}
+              </svg>
+
+              {markers.map(m => (
+                <button key={m.key} type="button" title={m.text}
+                  onClick={e => { e.stopPropagation(); setSel({ kind: "marker", key: m.key }); setTab("selection"); }}
+                  style={{ position: "absolute",
+                    left: `${(m.x / mapElmos) * 100}%`, top: `${(m.z / mapElmos) * 100}%`,
+                    transform: "translate(-50%, -100%)", padding: "1px 4px", cursor: "pointer",
+                    background: "rgba(0,0,0,.72)", color: "#fff", border: 0, whiteSpace: "nowrap",
+                    font: "var(--w-medium) var(--size-micro)/1.4 var(--font-core)",
+                    outline: sel?.key === m.key ? "2px solid #fff" : "none" }}>
+                  {m.text}
+                </button>
+              ))}
+
               {features.map(f => (
                 <button key={f.key} type="button" title={`${f.name} (${f.x}, ${f.z})`}
                   onClick={e => { e.stopPropagation(); setSel({ kind: "feature", key: f.key }); setTab("selection"); }}
@@ -406,12 +460,18 @@ export default function SplaunchScreen({
               </div>
             )}
             <span style={{ font: "var(--w-regular) var(--size-micro)/1 var(--font-core)",
-              color: "var(--text-low)", textTransform: "uppercase",
-              letterSpacing: "var(--track-label)" }}>
-              Click to place {brush || "—"}
+              color: routing ? "var(--signal-warn)" : "var(--text-low)",
+              textTransform: "uppercase", letterSpacing: "var(--track-label)" }}>
+              {routing
+                ? "Click to add patrol points"
+                : mode === "marker"
+                  ? "Click to place a mark"
+                  : `Click to place ${brush || "—"}`}
             </span>
             <span style={{ flex: 1 }} />
-            <span style={label}>{units.length} units · {features.length} wrecks</span>
+            <span style={label}>
+              {units.length} units · {features.length} wrecks · {markers.length} marks
+            </span>
             <label style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)" }}>
               <span style={label}>Map size</span>
               <input type="number" min={512} step={512} value={mapElmos}
@@ -435,7 +495,8 @@ export default function SplaunchScreen({
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
             {tab === "selection" && (
               <Selection selected={selected} kind={sel?.kind} teams={teams} roster={roster}
-                onPatch={patchSelected} onDelete={deleteSelected} />
+                onPatch={patchSelected} onDelete={deleteSelected}
+                routing={routing} onRoute={setRouting} />
             )}
             {tab === "objectives" && (
               <Objectives goals={goals} setGoals={setGoals} notes={notes} setNotes={setNotes}
@@ -443,7 +504,8 @@ export default function SplaunchScreen({
             )}
             {tab === "teams" && (
               <Teams teams={teams} setTeams={setTeams} defeat={defeat} setDefeat={setDefeat}
-                ais={install?.ais ?? []} roster={roster} units={units} />
+                ais={install?.ais ?? []} roster={roster} units={units}
+                difficulty={difficulty} setDifficulty={setDifficulty} />
             )}
             {tab === "briefing" && (
               <div style={{ padding: "var(--sp-5)", display: "flex", flexDirection: "column",

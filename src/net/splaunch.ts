@@ -27,7 +27,16 @@ export interface Placed {
   terraformHeight?: number | null;
   /** Owned by Gaia rather than by a team. */
   neutral?: boolean;
+  /** Points to walk, in order, for ever. Needs at least two to be a route. */
+  patrol?: [number, number][];
+  /** Patrol on the spot, facing the middle of the map. */
+  selfPatrol?: boolean;
+  difficultyAtLeast?: number | null;
+  difficultyAtMost?: number | null;
 }
+
+/** A label on the map, shown to the player from the start. */
+export interface Marker { x: number; z: number; text: string }
 
 export interface ScenarioTeam { id: number; ally: number; ai: string | null; colour: string }
 
@@ -66,10 +75,15 @@ export interface Scenario {
   briefing: string | null;
   defeat: Defeat[];
   mapElmos: number;
+  markers: Marker[];
+  /** 1 easy, 2 normal, 3 hard. Gates the per-unit difficulty fields. */
+  difficulty: number;
 }
 
 export const FORMAT_VERSION = 1;
 export const DEFAULT_MAP_ELMOS = 8 * 512;
+/** Zero-K's own default, from mission_galaxy_campaign_battle.lua. */
+export const DEFAULT_DIFFICULTY = 2;
 
 export interface CatalogueMap {
   name: string;

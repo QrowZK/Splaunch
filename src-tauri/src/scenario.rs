@@ -60,6 +60,31 @@ pub struct Placed {
     /// neutral objective sitting between two players.
     #[serde(default)]
     pub neutral: bool,
+    /// Points to walk, in order, for ever.
+    ///
+    /// The closest the modern mission system comes to scripted behaviour. The
+    /// gadget turns the first point into a move and the rest into shift-queued
+    /// patrols, so a two-point route is a sentry walking a line.
+    #[serde(default)]
+    pub patrol: Vec<[f32; 2]>,
+    /// Patrol on the spot, facing the middle of the map. One click, no route.
+    #[serde(default)]
+    pub self_patrol: bool,
+    /// Only exists at or above this difficulty (1-3).
+    #[serde(default)]
+    pub difficulty_at_least: Option<u32>,
+    /// Only exists at or below this difficulty (1-3).
+    #[serde(default)]
+    pub difficulty_at_most: Option<u32>,
+}
+
+/// A label on the map, shown to the player from the start.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Marker {
+    pub x: f32,
+    pub z: f32,
+    pub text: String,
 }
 
 /// A team in the scenario. Team 0 is the player unless `ai` says otherwise.
@@ -178,6 +203,20 @@ pub struct Scenario {
     /// The map's width in elmos.
     #[serde(default = "default_map_elmos")]
     pub map_elmos: u32,
+    /// Labels on the map, shown from the start.
+    #[serde(default)]
+    pub markers: Vec<Marker>,
+    /// 1 easy, 2 normal, 3 hard. Gates the per-unit `difficultyAt*` fields, so
+    /// one scenario can be three.
+    #[serde(default = "default_difficulty")]
+    pub difficulty: u32,
+}
+
+/// Zero-K's own default, from `mission_galaxy_campaign_battle.lua`.
+pub const DEFAULT_DIFFICULTY: u32 = 2;
+
+fn default_difficulty() -> u32 {
+    DEFAULT_DIFFICULTY
 }
 
 /// The format version this build writes.
@@ -363,6 +402,25 @@ pub fn mission_modoptions(s: &Scenario) -> Vec<(String, String)> {
         out.push(("bonusobjectiveconfig".into(), customkey::encode(&list)));
     }
 
+    /* Only when it is not Zero-K's own default. A scenario that does not use
+       the difficultyAt* fields has nothing to say here, and a modoption that
+       repeats the default is noise in a script somebody may have to read. */
+    if s.difficulty != DEFAULT_DIFFICULTY {
+        out.push(("planetmissiondifficulty".into(), s.difficulty.to_string()));
+    }
+
+    if !s.markers.is_empty() {
+        let mut list = Table::new();
+        for marker in &s.markers {
+            let mut entry = Table::new();
+            entry.set("x", ck::n(marker.x as f64));
+            entry.set("z", ck::n(marker.z as f64));
+            entry.set("text", ck::s(&marker.text));
+            list.push(ck::t(entry));
+        }
+        out.push(("planetmissionmapmarkers".into(), customkey::encode(&list)));
+    }
+
     if !s.features.is_empty() {
         let mut list = Table::new();
         for feature in &s.features {
@@ -467,6 +525,27 @@ fn placed_fields(unit: &Placed) -> Table {
     }
     if let Some(height) = unit.terraform_height {
         entry.set("terraformHeight", ck::n(height as f64));
+    }
+    if let Some(at_least) = unit.difficulty_at_least {
+        entry.set("difficultyAtLeast", ck::n(at_least));
+    }
+    if let Some(at_most) = unit.difficulty_at_most {
+        entry.set("difficultyAtMost", ck::n(at_most));
+    }
+    /* A route beats the on-the-spot patrol, because the gadget checks
+       `commands`, then `patrolRoute`, then `selfPatrol` and takes the first -
+       so sending both would silently discard the one the author drew. */
+    if unit.patrol.len() > 1 {
+        let mut route = Table::new();
+        for point in &unit.patrol {
+            let mut pos = Table::new();
+            pos.push(ck::n(point[0] as f64));
+            pos.push(ck::n(point[1] as f64));
+            route.push(ck::t(pos));
+        }
+        entry.set("patrolRoute", ck::t(route));
+    } else if unit.self_patrol {
+        entry.set("selfPatrol", ck::b(true));
     }
     entry
 }
@@ -594,6 +673,8 @@ mod tests {
             defeat: vec![],
             format_version: FORMAT_VERSION,
             map_elmos: DEFAULT_MAP_ELMOS,
+            markers: vec![],
+            difficulty: DEFAULT_DIFFICULTY,
         }
     }
 
@@ -806,6 +887,75 @@ mod tests {
     }
 
     #[test]
+    fn a_patrol_route_travels_as_a_list_of_points() {
+        let mut sc = sample();
+        sc.units[0].patrol = vec![[100.0, 200.0], [800.0, 900.0]];
+        let script = write_script(&sc, "Qrow").unwrap();
+        let team0 = script.split("[TEAM0]").nth(1).unwrap().split("[TEAM1]").next().unwrap();
+        let value = value_of(team0, "extrastartunits_1").unwrap();
+        let lua = String::from_utf8(decode_as_the_game_does(&value)).unwrap();
+        assert!(lua.contains("patrolRoute={[1]={[1]=100,[2]=200,},[2]={[1]=800,[2]=900,},}"), "{lua}");
+    }
+
+    #[test]
+    fn a_route_beats_patrolling_on_the_spot() {
+        /* The gadget takes the first of `commands`, `patrolRoute`, `selfPatrol`
+           it finds, so sending both would silently discard the route the author
+           drew and leave the unit turning circles instead. */
+        let mut sc = sample();
+        sc.units[0].patrol = vec![[10.0, 20.0], [30.0, 40.0]];
+        sc.units[0].self_patrol = true;
+        let script = write_script(&sc, "Qrow").unwrap();
+        let team0 = script.split("[TEAM0]").nth(1).unwrap().split("[TEAM1]").next().unwrap();
+        let lua = String::from_utf8(
+            decode_as_the_game_does(&value_of(team0, "extrastartunits_1").unwrap())).unwrap();
+        assert!(lua.contains("patrolRoute"), "{lua}");
+        assert!(!lua.contains("selfPatrol"), "{lua}");
+
+        // A one-point "route" is not a route, so it falls through.
+        sc.units[0].patrol = vec![[10.0, 20.0]];
+        let script = write_script(&sc, "Qrow").unwrap();
+        let team0 = script.split("[TEAM0]").nth(1).unwrap().split("[TEAM1]").next().unwrap();
+        let lua = String::from_utf8(
+            decode_as_the_game_does(&value_of(team0, "extrastartunits_1").unwrap())).unwrap();
+        assert!(!lua.contains("patrolRoute"), "{lua}");
+        assert!(lua.contains("selfPatrol=true"), "{lua}");
+    }
+
+    #[test]
+    fn difficulty_is_only_sent_when_it_is_not_the_games_own_default() {
+        let script = write_script(&sample(), "Qrow").unwrap();
+        let block = script.split("[MODOPTIONS]").nth(1).unwrap();
+        assert!(value_of(block, "planetmissiondifficulty").is_none(), "{block}");
+
+        let mut sc = sample();
+        sc.difficulty = 3;
+        sc.units[0].difficulty_at_least = Some(3);
+        let script = write_script(&sc, "Qrow").unwrap();
+        let block = script.split("[MODOPTIONS]").nth(1).unwrap();
+        assert_eq!(value_of(block, "planetmissiondifficulty").as_deref(), Some("3"));
+        let team0 = script.split("[TEAM0]").nth(1).unwrap().split("[TEAM1]").next().unwrap();
+        let lua = String::from_utf8(
+            decode_as_the_game_does(&value_of(team0, "extrastartunits_1").unwrap())).unwrap();
+        assert!(lua.contains("difficultyAtLeast=3"), "{lua}");
+    }
+
+    #[test]
+    fn markers_reach_the_map() {
+        let mut sc = sample();
+        sc.markers = vec![Marker { x: 900.0, z: 1200.0, text: "Here?".into() }];
+        let lua = modoption_lua(&write_script(&sc, "Qrow").unwrap(), "planetmissionmapmarkers");
+        assert!(lua.contains("x=900") && lua.contains("z=1200"), "{lua}");
+        /* The question mark travels as the escape `\063` rather than as itself,
+           which is the whole point of the transport: on the wire a `?` at the
+           wrong offset encodes to `_`, which Zero-K's decoder rewrites to `=`
+           and reads as end-of-data. Lua turns the escape back into `?` when it
+           parses the literal, so the player sees the question mark. */
+        assert!(lua.contains(r#"text="Here\063""#), "{lua}");
+        assert!(!lua.contains("Here?"), "an unescaped ? would truncate: {lua}");
+    }
+
+    #[test]
     fn gaias_units_ride_on_the_modoptions_not_on_a_team() {
         /* The gadget reads neutral units by calling its own start-unit reader
            with `Spring.GetModOptions()` standing in for Gaia's custom keys. */
@@ -874,6 +1024,17 @@ mod tests {
         assert!(lua.contains("satisfyUntilTime=900"), "{lua}");
         let brief = modoption_lua(&script, "planetmissioninformationtext");
         assert!(brief.contains("did not come back"), "{brief}");
+
+        // It exercises the things a scenario can do, because an example that
+        // shows one feature teaches one feature.
+        let marks = modoption_lua(&script, "planetmissionmapmarkers");
+        assert!(marks.contains("Their commander"), "{marks}");
+        let team1 = script.split("[TEAM1]").nth(1).unwrap();
+        let lua = String::from_utf8(
+            decode_as_the_game_does(&value_of(team1, "extrastartunits_1").unwrap())).unwrap();
+        assert!(lua.contains("patrolRoute"), "the example has no patrol: {lua}");
+        assert!(lua.contains("selfPatrol=true"), "{lua}");
+        assert!(lua.contains("difficultyAtLeast=3"), "{lua}");
     }
 
     #[test]
@@ -1035,7 +1196,8 @@ mod tests {
             teams: vec![], units: vec![], objectives: vec![],
             goals: vec![], features: vec![], briefing: None,
             defeat: vec![], format_version: FORMAT_VERSION,
-            map_elmos: DEFAULT_MAP_ELMOS,
+            map_elmos: DEFAULT_MAP_ELMOS, markers: vec![],
+            difficulty: DEFAULT_DIFFICULTY,
         };
         let p = problems(&empty);
         assert!(p.len() >= 3);
