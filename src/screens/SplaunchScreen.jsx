@@ -7,7 +7,8 @@ import Objectives from "./Objectives.jsx";
 import Teams, { colourOf } from "./Teams.jsx";
 import Selection from "./Selection.jsx";
 import {
-  scenarioProblems, saveScenario, openScenario, exampleScenario, mapIsInstalled,
+  scenarioProblems, scenarioScript, saveScenario, openScenario, exampleScenario,
+  mapIsInstalled,
   FORMAT_VERSION, DEFAULT_MAP_ELMOS, DEFAULT_DIFFICULTY,
 } from "../net/splaunch.ts";
 
@@ -147,6 +148,7 @@ export default function SplaunchScreen({
   const [issuesOpen, setIssuesOpen] = React.useState(false);
   const [blockedOpen, setBlockedOpen] = React.useState(false);
   const [saved, setSaved] = React.useState(undefined);
+  const [script, setScript] = React.useState(undefined);
   const boardRef = React.useRef(null);
 
   /* A brush as soon as there is a roster to pick one from - a commander, not
@@ -361,6 +363,13 @@ export default function SplaunchScreen({
         {install?.game
           ? <Badge tone="neutral" mono>{install.game}</Badge>
           : <Badge tone="danger">No Zero-K found</Badge>}
+        {/* What will actually be handed to the engine. The one thing worth
+            looking at when a launch does something unexpected, and it costs
+            nothing to expose because the compiler already answers this. */}
+        <Button variant="ghost" size="sm" icon="code"
+          onClick={() => scenarioScript(scenario, player).then(
+            t => setScript(t || "(nothing - fix the problems first)"),
+            e => setScript(String(e?.message ?? e)))}>Script</Button>
         <Button variant="ghost" size="sm" icon="folder" onClick={openFile}>Open</Button>
         <Button variant="ghost" size="sm" icon="save"
           onClick={() => saveScenario(scenario).then(
@@ -566,6 +575,14 @@ export default function SplaunchScreen({
           Zero-K is already running. Testing starts a new game, and the engine will
           only run one at a time. Quit the running match first.
         </span>
+      </Dialog>
+
+      <Dialog open={script !== undefined} title="The start script" width={760}
+        onClose={() => setScript(undefined)}
+        footer={<Button variant="primary" onClick={() => setScript(undefined)}>Close</Button>}>
+        <pre style={{ ...mono, background: "var(--surface-sunken)", padding: "var(--sp-5)",
+          border: "1px solid var(--w-06)", maxHeight: "60vh", overflow: "auto",
+          whiteSpace: "pre", margin: 0 }}>{script}</pre>
       </Dialog>
 
       <Dialog open={!!saved} title="Saved" width={420} onClose={() => setSaved(undefined)}
