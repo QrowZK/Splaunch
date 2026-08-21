@@ -16,9 +16,9 @@
         "title": "Splaunch",
         "width": 1440,
         "height": 900,
-        "minWidth": 1280,
-        "minHeight": 720,
-        "decorations": false,
+        "minWidth": 1024,
+        "minHeight": 700,
+        "decorations": true,
         "resizable": true
       }
     ],
