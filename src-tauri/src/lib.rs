@@ -10,6 +10,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(launch::Game::default())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             launch::sp_locate_install,
             launch::sp_launch_preview,
@@ -19,6 +20,8 @@ pub fn run() {
             scenario::spsc_script,
             scenario::spsc_problems,
             scenario::spsc_test,
+            scenario::spsc_save,
+            scenario::spsc_open,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Splaunch");

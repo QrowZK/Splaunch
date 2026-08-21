@@ -118,7 +118,7 @@ pub fn engine_versions(root: &Path) -> Vec<String> {
             }
         }
     }
-    found.sort_by(|a, b| version_key(b).cmp(&version_key(a)));
+    found.sort_by_key(|v| std::cmp::Reverse(version_key(v)));
     found
 }
 
@@ -205,7 +205,7 @@ pub fn game_archives(root: &Path) -> Vec<GameArchive> {
     let Ok(entries) = std::fs::read_dir(root.join("games")) else { return out };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().is_none_or(|e| !e.eq_ignore_ascii_case("sdz")) {
+        if !matches!(path.extension(), Some(e) if e.eq_ignore_ascii_case("sdz")) {
             continue;
         }
         let Some(modinfo) = read_from_archive(&path, "modinfo.lua") else { continue };
@@ -492,12 +492,12 @@ mod tests {
     fn the_newest_engine_is_the_newest_by_number_not_by_string() {
         // Sorted as strings, "105.1.1" beats "2025.06.21", and the editor would
         // default to an engine years older than the one the player uses.
-        let mut versions = vec![
+        let mut versions = [
             "105.1.1-2511-g1234567 maintenance".to_string(),
             "2025.06.21".to_string(),
             "2024.12.01".to_string(),
         ];
-        versions.sort_by(|a, b| version_key(b).cmp(&version_key(a)));
+        versions.sort_by_key(|v| std::cmp::Reverse(version_key(v)));
         assert_eq!(versions[0], "2025.06.21");
         assert_eq!(versions[2], "105.1.1-2511-g1234567 maintenance");
     }

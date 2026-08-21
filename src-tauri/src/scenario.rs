@@ -22,16 +22,44 @@ use crate::customkey::{self, Table, Value};
 use crate::customkey as ck;
 
 /// One unit placed on the map.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// The optional fields are the ones `mission_galaxy_campaign_battle.lua` reads
+/// off a placed unit, checked against the gadget rather than taken from a
+/// document. Every one of them is omitted from the payload when unset, because
+/// the gadget branches on presence and a defaulted value is not the same as no
+/// value.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Placed {
-    /// Zero-K's unit name, e.g. `armcom`. Not validated here - the engine is
+    /// Zero-K's unit name, e.g. `cloakraid`. Not validated here - the engine is
     /// the authority on what exists, and guessing would go stale.
     pub unit: String,
     pub team: u32,
     /// Map position in elmos.
     pub x: f32,
     pub z: f32,
+    /// 0-3, quarter turns. Random if absent.
+    #[serde(default)]
+    pub facing: Option<u32>,
+    /// 0.0 to 1.0. A half-built factory is a scenario premise all by itself.
+    #[serde(default)]
+    pub build_progress: Option<f32>,
+    /// Veterancy, so a defending unit can be a hardened one.
+    #[serde(default)]
+    pub experience: Option<f32>,
+    /// `hold`, `maneuver` or `roam`, as the game spells them.
+    #[serde(default)]
+    pub movestate: Option<u32>,
+    /// Cannot be killed. For the thing the scenario is about.
+    #[serde(default)]
+    pub invincible: Option<bool>,
+    /// Flattens the ground under it, so a building on a slope still sits flat.
+    #[serde(default)]
+    pub terraform_height: Option<f32>,
+    /// Owned by Gaia rather than by a team: scenery that shoots back, or a
+    /// neutral objective sitting between two players.
+    #[serde(default)]
+    pub neutral: bool,
 }
 
 /// A team in the scenario. Team 0 is the player unless `ai` says otherwise.
@@ -95,9 +123,38 @@ pub struct Objective {
     pub goal: Goal,
 }
 
+/// What losing looks like, for one side.
+///
+/// Indexed by allyteam in the payload. `vitalUnitTypes` is the usual one: lose
+/// every commander and the mission ends, which is what a player expects and
+/// what the campaign does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Defeat {
+    pub ally: u32,
+    /// Losing all of these loses the game for this side.
+    #[serde(default)]
+    pub vital_units: Vec<String>,
+    /// A hard clock. Omitted when absent rather than sent as zero.
+    #[serde(default)]
+    pub lose_after_seconds: Option<u32>,
+}
+
+/// How wide the map is, in elmos.
+///
+/// Spring maps are `size * 512` elmos on a side, and the size is not knowable
+/// from the name - it comes from the map's own header. The editor carries it so
+/// placements mean the same thing on both sides of the bridge, and an author
+/// can correct it when the catalogue is wrong.
+pub const DEFAULT_MAP_ELMOS: u32 = 8 * 512;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Scenario {
+    /// Bumped when the on-disk shape changes in a way an older Splaunch could
+    /// not read. A scenario file outlives the version that wrote it.
+    #[serde(default = "current_format")]
+    pub format_version: u32,
     pub name: String,
     pub map: String,
     pub game: String,
@@ -115,6 +172,23 @@ pub struct Scenario {
     /// Shown before the match starts, in Zero-K's briefing window.
     #[serde(default)]
     pub briefing: Option<String>,
+    /// What losing means, per side.
+    #[serde(default)]
+    pub defeat: Vec<Defeat>,
+    /// The map's width in elmos.
+    #[serde(default = "default_map_elmos")]
+    pub map_elmos: u32,
+}
+
+/// The format version this build writes.
+pub const FORMAT_VERSION: u32 = 1;
+
+fn current_format() -> u32 {
+    FORMAT_VERSION
+}
+
+fn default_map_elmos() -> u32 {
+    DEFAULT_MAP_ELMOS
 }
 
 /// Anything a script value cannot contain.
@@ -144,6 +218,13 @@ pub fn problems(s: &Scenario) -> Vec<String> {
     if s.map.trim().is_empty() {
         out.push("No map chosen.".into());
     }
+    /* The one that used to be missing entirely. `GameType` names the archive
+       the engine loads, and an empty one produces a script that is perfectly
+       well-formed and starts nothing - which is a bad way to spend an evening.
+       Splaunch never asked for it, because inside the lobby the server said. */
+    if s.game.trim().is_empty() {
+        out.push("No Zero-K version chosen - the game cannot start without one.".into());
+    }
     if s.teams.is_empty() {
         out.push("No teams.".into());
     }
@@ -162,6 +243,25 @@ pub fn problems(s: &Scenario) -> Vec<String> {
     }
     if s.units.is_empty() {
         out.push("Nothing placed yet.".into());
+    }
+    /* Off the edge of the map the engine either clamps or drops the unit, and
+       either way the scenario is not the one that was drawn. Worth catching
+       here because the map size is itself a guess until an author corrects it. */
+    let edge = s.map_elmos as f32;
+    if let Some(stray) = s
+        .units
+        .iter()
+        .find(|u| u.x < 0.0 || u.z < 0.0 || u.x > edge || u.z > edge)
+    {
+        out.push(format!(
+            "A {} sits outside the map, at {}, {}. The map is {} elmos across.",
+            stray.unit, stray.x as i64, stray.z as i64, s.map_elmos
+        ));
+    }
+    for goal in &s.goals {
+        if goal.description.trim().is_empty() {
+            out.push("An objective has no description, so the player cannot read it.".into());
+        }
     }
     out
 }
@@ -255,11 +355,12 @@ pub fn mission_modoptions(s: &Scenario) -> Vec<(String, String)> {
         for objective in &s.goals {
             list.push(ck::t(goal_fields(objective)));
         }
-        // Both keys: one drives the panel the player reads, the other the
-        // evaluation. The gadget only reads the bonus list.
-        let encoded = customkey::encode(&list);
-        out.push(("bonusobjectiveconfig".into(), encoded.clone()));
-        out.push(("objectiveconfig".into(), encoded));
+        /* One key, not two. This used to send the same payload as
+           `objectiveconfig` as well, on the theory that one drove the panel and
+           the other the evaluation. `mission_galaxy_campaign_battle.lua` never
+           reads `objectiveconfig` - the string does not occur in it - so the
+           second copy was dead weight in a value that has a length limit. */
+        out.push(("bonusobjectiveconfig".into(), customkey::encode(&list)));
     }
 
     if !s.features.is_empty() {
@@ -277,13 +378,53 @@ pub fn mission_modoptions(s: &Scenario) -> Vec<(String, String)> {
         out.push(("featurestospawn".into(), customkey::encode(&list)));
     }
 
-    // The briefing window titles itself from `name` and needs a description, so
-    // it is only worth sending when there is something to read.
-    if let Some(text) = s.briefing.as_deref().filter(|t| !t.trim().is_empty()) {
+    /* The briefing, and the only place the free-text objectives go.
+       They used to go nowhere at all: the editor collected them, the struct
+       carried them, and `write_script` never read the field, so an author's
+       objectives were dropped between pressing Test and the game starting.
+       Zero-K's briefing window takes a name, a description and a list of tips,
+       and a sentence that is not a unit count is exactly a tip. */
+    let notes: Vec<&String> = s.objectives.iter().filter(|o| !o.trim().is_empty()).collect();
+    let briefing = s.briefing.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    if briefing.is_some() || !notes.is_empty() {
         let mut info = Table::new();
         info.set("name", ck::s(&s.name));
-        info.set("description", ck::s(text));
+        info.set("description", ck::s(briefing.unwrap_or("")));
+        if !notes.is_empty() {
+            let mut tips = Table::new();
+            for note in notes {
+                let mut tip = Table::new();
+                tip.set("text", ck::s(note));
+                tips.push(ck::t(tip));
+            }
+            info.set("tips", ck::t(tips));
+        }
         out.push(("planetmissioninformationtext".into(), customkey::encode(&info)));
+    }
+
+    /* Defeat conditions, indexed by allyteam the way the gadget indexes them.
+       Without any, a scenario ends only when one side has nothing left, which
+       is a long way to lose a mission that was about one commander. */
+    if !s.defeat.is_empty() {
+        let mut list = Table::new();
+        for defeat in &s.defeat {
+            let mut entry = Table::new();
+            if !defeat.vital_units.is_empty() {
+                entry.set("vitalUnitTypes", unit_list(&defeat.vital_units));
+            }
+            if let Some(seconds) = defeat.lose_after_seconds {
+                entry.set("loseAfterSeconds", ck::n(seconds));
+            }
+            list.set_index(defeat.ally as i64, ck::t(entry));
+        }
+        out.push(("defeatconditionconfig".into(), customkey::encode(&list)));
+    }
+
+    /* Gaia's units ride on the modoptions table rather than on a team, because
+       that is where the gadget looks for them: it calls its own start-unit
+       reader with `Spring.GetModOptions()` standing in for Gaia's custom keys. */
+    for (key, value) in start_unit_keys(s.units.iter().filter(|u| u.neutral), "neutralstartunits") {
+        out.push((key, value));
     }
 
     out
@@ -296,19 +437,56 @@ pub fn mission_modoptions(s: &Scenario) -> Vec<(String, String)> {
 /// campaign settled on.
 const START_UNITS_BLOCK: usize = 40;
 
-fn start_unit_keys(s: &Scenario, team: u32) -> Vec<(String, String)> {
-    let mine: Vec<&Placed> = s.units.iter().filter(|u| u.team == team).collect();
+/// One placed unit, as the gadget reads it.
+///
+/// `name` and not `unitDefName`: the gadget resolves a placed unit with
+/// `UnitDefNames[unitData.name]`, and reserves `unitDefName` for retinue units,
+/// which are a different feature entirely.
+fn placed_fields(unit: &Placed) -> Table {
+    let mut entry = Table::new();
+    entry.set("name", ck::s(&unit.unit));
+    entry.set("x", ck::n(unit.x as f64));
+    entry.set("z", ck::n(unit.z as f64));
+    // Each of these is written only when set. The gadget branches on the field
+    // being present, so a defaulted zero is a different instruction from
+    // silence - `buildProgress = 0` is an unbuilt husk, not a finished unit.
+    if let Some(facing) = unit.facing {
+        entry.set("facing", ck::n(facing));
+    }
+    if let Some(progress) = unit.build_progress {
+        entry.set("buildProgress", ck::n(progress as f64));
+    }
+    if let Some(experience) = unit.experience {
+        entry.set("experience", ck::n(experience as f64));
+    }
+    if let Some(movestate) = unit.movestate {
+        entry.set("movestate", ck::n(movestate));
+    }
+    if let Some(true) = unit.invincible {
+        entry.set("invincible", ck::b(true));
+    }
+    if let Some(height) = unit.terraform_height {
+        entry.set("terraformHeight", ck::n(height as f64));
+    }
+    entry
+}
+
+/// Chunk placed units into the numbered custom keys the gadget walks.
+///
+/// The gadget reads `<prefix>1`, `<prefix>2` and so on until one is missing, so
+/// the numbering has to start at 1 and have no holes.
+fn start_unit_keys<'a>(
+    units: impl Iterator<Item = &'a Placed>,
+    prefix: &str,
+) -> Vec<(String, String)> {
+    let mine: Vec<&Placed> = units.collect();
     let mut out = Vec::new();
     for (block, chunk) in mine.chunks(START_UNITS_BLOCK).enumerate() {
         let mut list = Table::new();
         for unit in chunk {
-            let mut entry = Table::new();
-            entry.set("name", ck::s(&unit.unit));
-            entry.set("x", ck::n(unit.x as f64));
-            entry.set("z", ck::n(unit.z as f64));
-            list.push(ck::t(entry));
+            list.push(ck::t(placed_fields(unit)));
         }
-        out.push((format!("extrastartunits_{}", block + 1), customkey::encode(&list)));
+        out.push((format!("{prefix}_{}", block + 1), customkey::encode(&list)));
     }
     out
 }
@@ -369,7 +547,8 @@ pub fn write_script(s: &Scenario, player: &str) -> Result<String, String> {
         key(&mut out, "\t\t", "RGBColor", escape(&t.colour));
         // Placed units ride on the team that owns them, which is how Zero-K
         // knows whose they are without a field saying so.
-        for (name, value) in start_unit_keys(s, t.id) {
+        let mine = s.units.iter().filter(|u| !u.neutral && u.team == t.id);
+        for (name, value) in start_unit_keys(mine, "extrastartunits") {
             key(&mut out, "\t\t", &name, value);
         }
         out.push_str("\t}\n");
@@ -401,16 +580,25 @@ mod tests {
                 Team { id: 0, ally: 0, ai: None, colour: "0 0 1".into() },
                 Team { id: 1, ally: 1, ai: Some("NullAI".into()), colour: "1 0 0".into() },
             ],
-            units: vec![Placed { unit: "armcom".into(), team: 0, x: 512.0, z: 512.0 }],
+            units: vec![Placed {
+                unit: "armcom1".into(),
+                team: 0,
+                x: 512.0,
+                z: 512.0,
+                ..Default::default()
+            }],
             objectives: vec!["Destroy the enemy commander".into()],
             goals: vec![],
             features: vec![],
             briefing: None,
+            defeat: vec![],
+            format_version: FORMAT_VERSION,
+            map_elmos: DEFAULT_MAP_ELMOS,
         }
     }
 
 
-    use crate::customkey::decode_as_the_game_does;
+    use crate::customkey::{decode_as_the_game_does, to_lua};
 
     /// The value of `key=` inside a script section, unterminated semicolon and
     /// surrounding whitespace removed.
@@ -451,13 +639,13 @@ mod tests {
     fn a_survival_goal_compiles_to_the_fields_zero_k_checks() {
         let sc = with_goals(vec![Objective {
             description: "Hold out for two minutes.".into(),
-            goal: Goal::SurviveUntil { seconds: 120, units: vec!["armcom".into()] },
+            goal: Goal::SurviveUntil { seconds: 120, units: vec!["armcom1".into()] },
         }]);
         let lua = modoption_lua(&write_script(&sc, "Qrow").unwrap(), "bonusobjectiveconfig");
         assert!(lua.contains("satisfyUntilTime=120"), "{lua}");
         assert!(lua.contains("comparisionType=1"), "{lua}");
         assert!(lua.contains("targetNumber=1"), "{lua}");
-        assert!(lua.contains("armcom"), "{lua}");
+        assert!(lua.contains("armcom1"), "{lua}");
     }
 
     #[test]
@@ -466,14 +654,14 @@ mod tests {
         // getting it wrong makes an objective that quietly cannot be completed.
         let build = with_goals(vec![Objective {
             description: "Build five Glaives.".into(),
-            goal: Goal::BuildBy { unit: "armpw".into(), count: 5, seconds: 300 },
+            goal: Goal::BuildBy { unit: "cloakraid".into(), count: 5, seconds: 300 },
         }]);
         let lua = modoption_lua(&write_script(&build, "Qrow").unwrap(), "bonusobjectiveconfig");
         assert!(lua.contains("countRemovedUnits=true"), "{lua}");
 
         let have = with_goals(vec![Objective {
             description: "Have five Glaives.".into(),
-            goal: Goal::HaveAtOnce { unit: "armpw".into(), count: 5 },
+            goal: Goal::HaveAtOnce { unit: "cloakraid".into(), count: 5 },
         }]);
         let lua = modoption_lua(&write_script(&have, "Qrow").unwrap(), "bonusobjectiveconfig");
         assert!(!lua.contains("countRemovedUnits"), "{lua}");
@@ -484,7 +672,7 @@ mod tests {
     fn killing_uses_the_enemys_units_not_ours() {
         let sc = with_goals(vec![Objective {
             description: "Kill three Reavers.".into(),
-            goal: Goal::KillCount { unit: "armwar".into(), count: 3 },
+            goal: Goal::KillCount { unit: "cloakriot".into(), count: 3 },
         }]);
         let lua = modoption_lua(&write_script(&sc, "Qrow").unwrap(), "bonusobjectiveconfig");
         assert!(lua.contains("enemyUnitTypes"), "{lua}");
@@ -516,15 +704,18 @@ mod tests {
     #[test]
     fn features_reach_the_script() {
         let mut sc = sample();
-        sc.features = vec![Feature { name: "armcom_dead".into(), x: 100.0, z: 200.0, facing: Some(1) }];
+        sc.features = vec![Feature { name: "armcom1_dead".into(), x: 100.0, z: 200.0, facing: Some(1) }];
         let lua = modoption_lua(&write_script(&sc, "Qrow").unwrap(), "featurestospawn");
-        assert!(lua.contains("armcom_dead"), "{lua}");
+        assert!(lua.contains("armcom1_dead"), "{lua}");
         assert!(lua.contains("x=100") && lua.contains("z=200"), "{lua}");
     }
 
     #[test]
-    fn a_briefing_is_only_sent_when_there_is_one() {
-        let script = write_script(&sample(), "Qrow").unwrap();
+    fn a_briefing_is_only_sent_when_there_is_something_to_read() {
+        // Nothing to say: no briefing, and no notes either.
+        let mut bare = sample();
+        bare.objectives.clear();
+        let script = write_script(&bare, "Qrow").unwrap();
         assert!(!script.contains("planetmissioninformationtext"));
 
         let mut sc = sample();
@@ -534,12 +725,175 @@ mod tests {
     }
 
     #[test]
+    fn a_written_objective_reaches_the_player() {
+        /* These used to go nowhere. The editor collected them, the struct
+           carried them, and `write_script` never read the field - so an author
+           typed objectives, pressed Test, and the game was told none of them.
+           They ride in the briefing now, which is where a sentence that is not
+           a unit count belongs. */
+        let mut sc = sample();
+        sc.objectives = vec!["Hold the northern ridge.".into(), "Do not lose the dam.".into()];
+        let lua = modoption_lua(&write_script(&sc, "Qrow").unwrap(), "planetmissioninformationtext");
+        assert!(lua.contains("Hold the northern ridge."), "{lua}");
+        assert!(lua.contains("Do not lose the dam."), "{lua}");
+        assert!(lua.contains("tips="), "notes should travel as briefing tips: {lua}");
+    }
+
+    #[test]
+    fn nothing_is_sent_to_the_key_the_gadget_does_not_read() {
+        /* Both `bonusobjectiveconfig` and `objectiveconfig` used to be sent,
+           carrying identical payloads. `mission_galaxy_campaign_battle.lua`
+           does not contain the string `objectiveconfig` at all, so the second
+           copy did nothing except double the size of a value that has a
+           length limit. */
+        let sc = with_goals(vec![Objective {
+            description: "Win.".into(),
+            goal: Goal::WinBefore { seconds: 60 },
+        }]);
+        let script = write_script(&sc, "Qrow").unwrap();
+        assert!(script.contains("bonusobjectiveconfig"));
+        let block = script.split("[MODOPTIONS]").nth(1).unwrap();
+        assert!(value_of(block, "objectiveconfig").is_none(), "{block}");
+    }
+
+    #[test]
+    fn a_scenario_with_no_zero_k_version_does_not_compile() {
+        /* GameType names the archive the engine loads. Empty, the script is
+           well-formed and starts nothing, which is the worst way for this to
+           fail. Splaunch never asked for it because the lobby used to say. */
+        let mut sc = sample();
+        sc.game = String::new();
+        assert!(problems(&sc).iter().any(|p| p.contains("Zero-K version")));
+        let err = write_script(&sc, "Qrow").unwrap_err();
+        assert!(err.contains("Zero-K version"), "{err}");
+    }
+
+    #[test]
+    fn a_unit_off_the_edge_of_the_map_is_caught() {
+        let mut sc = sample();
+        sc.units[0].x = 99_000.0;
+        assert!(problems(&sc).iter().any(|p| p.contains("outside the map")));
+    }
+
+    #[test]
+    fn optional_unit_fields_are_omitted_rather_than_defaulted() {
+        /* The gadget branches on a field being present. `buildProgress = 0` is
+           an unbuilt husk, not a finished unit, so writing a default would
+           change what spawns. */
+        let plain = to_lua(&placed_fields(&Placed {
+            unit: "cloakraid".into(),
+            team: 0,
+            x: 1.0,
+            z: 2.0,
+            ..Default::default()
+        }));
+        assert_eq!(plain, "{name=\"cloakraid\",x=1,z=2,}");
+
+        let dressed = to_lua(&placed_fields(&Placed {
+            unit: "armcom1".into(),
+            team: 0,
+            x: 1.0,
+            z: 2.0,
+            facing: Some(2),
+            build_progress: Some(0.5),
+            experience: Some(1.0),
+            invincible: Some(true),
+            ..Default::default()
+        }));
+        assert!(dressed.contains("facing=2"), "{dressed}");
+        assert!(dressed.contains("buildProgress=0.5"), "{dressed}");
+        assert!(dressed.contains("invincible=true"), "{dressed}");
+    }
+
+    #[test]
+    fn gaias_units_ride_on_the_modoptions_not_on_a_team() {
+        /* The gadget reads neutral units by calling its own start-unit reader
+           with `Spring.GetModOptions()` standing in for Gaia's custom keys. */
+        let mut sc = sample();
+        sc.units.push(Placed {
+            unit: "turretlaser".into(),
+            team: 0,
+            x: 700.0,
+            z: 700.0,
+            neutral: true,
+            ..Default::default()
+        });
+        let script = write_script(&sc, "Qrow").unwrap();
+        let block = script.split("[MODOPTIONS]").nth(1).unwrap();
+        let value = value_of(block, "neutralstartunits_1").expect("no neutral units");
+        let lua = String::from_utf8(decode_as_the_game_does(&value)).unwrap();
+        assert!(lua.contains("turretlaser"), "{lua}");
+
+        // And it is not also on the team that nominally owns it.
+        let team0 = script.split("[TEAM0]").nth(1).unwrap().split("[TEAM1]").next().unwrap();
+        let owned = value_of(team0, "extrastartunits_1").unwrap();
+        let owned = String::from_utf8(decode_as_the_game_does(&owned)).unwrap();
+        assert!(!owned.contains("turretlaser"), "{owned}");
+    }
+
+    #[test]
+    fn a_scenario_survives_a_trip_through_a_file() {
+        let mut sc = sample();
+        sc.goals = vec![Objective {
+            description: "Hold out.".into(),
+            goal: Goal::SurviveUntil { seconds: 120, units: vec!["armcom1".into()] },
+        }];
+        sc.units[0].facing = Some(3);
+        sc.units[0].invincible = Some(true);
+        sc.defeat = vec![Defeat { ally: 0, vital_units: vec!["armcom1".into()], lose_after_seconds: None }];
+        assert_eq!(from_json(&to_json(&sc).unwrap()).unwrap(), sc);
+    }
+
+    #[test]
+    fn a_scenario_from_a_newer_splaunch_is_refused_by_name() {
+        /* Half-reading it would drop whatever the newer version added, and the
+           author would find out by playing a scenario missing an objective. */
+        let mut sc = sample();
+        sc.format_version = FORMAT_VERSION + 1;
+        let err = from_json(&to_json(&sc).unwrap()).unwrap_err();
+        assert!(err.contains("newer Splaunch"), "{err}");
+    }
+
+    #[test]
+    fn an_older_scenario_without_the_new_fields_still_opens() {
+        // Every field added after format 1 has a default, so a file written
+        // before them reads rather than failing.
+        let old = r#"{"name":"Old","map":"Comet Catcher Redux","game":"Zero-K v1.14.8.0",
+            "teams":[{"id":0,"ally":0,"ai":null,"colour":"0 0 1"}],
+            "units":[{"unit":"armcom1","team":0,"x":10,"z":10}],"objectives":[]}"#;
+        let sc = from_json(old).unwrap();
+        assert_eq!(sc.format_version, FORMAT_VERSION);
+        assert_eq!(sc.map_elmos, DEFAULT_MAP_ELMOS);
+        assert_eq!(sc.units[0].facing, None);
+    }
+
+    #[test]
+    fn defeat_conditions_are_indexed_by_allyteam() {
+        let mut sc = sample();
+        sc.defeat = vec![Defeat {
+            ally: 0,
+            vital_units: vec!["armcom1".into()],
+            lose_after_seconds: Some(600),
+        }];
+        let lua = modoption_lua(&write_script(&sc, "Qrow").unwrap(), "defeatconditionconfig");
+        assert!(lua.starts_with("{[0]="), "not indexed by allyteam: {lua}");
+        assert!(lua.contains("vitalUnitTypes"), "{lua}");
+        assert!(lua.contains("loseAfterSeconds=600"), "{lua}");
+    }
+
+    #[test]
     fn many_units_are_chunked_the_way_zero_k_chunks_them() {
         // Forty to a key, because that is what Zero-K's own script builder does
         // and a start script value has a length limit.
         let mut sc = sample();
         sc.units = (0..85)
-            .map(|i| Placed { unit: "armpw".into(), team: 0, x: i as f32, z: 0.0 })
+            .map(|i| Placed {
+                unit: "cloakraid".into(),
+                team: 0,
+                x: i as f32,
+                z: 0.0,
+                ..Default::default()
+            })
             .collect();
         let script = write_script(&sc, "Qrow").unwrap();
         let team0 = script.split("[TEAM0]").nth(1).unwrap().split("[TEAM1]").next().unwrap();
@@ -597,6 +951,8 @@ mod tests {
             name: "".into(), map: "".into(), game: "".into(),
             teams: vec![], units: vec![], objectives: vec![],
             goals: vec![], features: vec![], briefing: None,
+            defeat: vec![], format_version: FORMAT_VERSION,
+            map_elmos: DEFAULT_MAP_ELMOS,
         };
         let p = problems(&empty);
         assert!(p.len() >= 3);
@@ -731,15 +1087,43 @@ mod tests {
             .expect("no [TEAM0] section");
         let value = value_of(team0, "extrastartunits_1").expect("no units on team 0");
         let lua = String::from_utf8(decode_as_the_game_does(&value)).unwrap();
-        assert!(lua.contains("armcom"), "{lua}");
+        assert!(lua.contains("armcom1"), "{lua}");
     }
 }
 
 // --------------------------------------------------------------- commands ---
 
 /// Where a scenario's script is written before launching.
-fn scenario_paths() -> std::path::PathBuf {
-    std::env::temp_dir().join("shiro").join("scenario_script.txt")
+///
+/// Deliberately not inside the Zero-K folder: a Steam install under
+/// `Program Files` is not writable by a per-user process, and failing to launch
+/// because of that would be a maddening bug to find.
+fn script_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("splaunch").join("scenario_script.txt")
+}
+
+/// The extension a Splaunch scenario is saved under.
+const SCENARIO_EXT: &str = "splaunch";
+
+/// Read a scenario from disk.
+///
+/// A file from a newer Splaunch is refused by name rather than half-read: the
+/// failure an author can act on is "this was written by a newer version", not a
+/// missing objective they never notice.
+pub fn from_json(text: &str) -> Result<Scenario, String> {
+    let scenario: Scenario = serde_json::from_str(text)
+        .map_err(|e| format!("that is not a Splaunch scenario: {e}"))?;
+    if scenario.format_version > FORMAT_VERSION {
+        return Err(format!(
+            "This scenario was written by a newer Splaunch (format {}, this build reads {}).",
+            scenario.format_version, FORMAT_VERSION
+        ));
+    }
+    Ok(scenario)
+}
+
+pub fn to_json(scenario: &Scenario) -> Result<String, String> {
+    serde_json::to_string_pretty(scenario).map_err(|e| format!("could not write it: {e}"))
 }
 
 /// Compile without launching, so the editor can show the script.
@@ -754,6 +1138,56 @@ pub fn spsc_problems(scenario: Scenario) -> Vec<String> {
     problems(&scenario)
 }
 
+/// Save a scenario, asking where.
+///
+/// Returns the path written, or `None` if the author closed the dialog - which
+/// is not an error and should not be reported as one.
+#[tauri::command]
+pub fn spsc_save(app: tauri::AppHandle, scenario: Scenario) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let suggested = format!(
+        "{}.{SCENARIO_EXT}",
+        scenario.name.trim().replace(['/', '\\', ':'], "-")
+    );
+    let Some(path) = app
+        .dialog()
+        .file()
+        .set_title("Save scenario")
+        .set_file_name(&suggested)
+        .add_filter("Splaunch scenario", &[SCENARIO_EXT])
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = path
+        .into_path()
+        .map_err(|e| format!("that is not a path this can write to: {e}"))?;
+    std::fs::write(&path, to_json(&scenario)?)
+        .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    Ok(Some(path.display().to_string()))
+}
+
+/// Open a scenario, asking which.
+#[tauri::command]
+pub fn spsc_open(app: tauri::AppHandle) -> Result<Option<Scenario>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(path) = app
+        .dialog()
+        .file()
+        .set_title("Open scenario")
+        .add_filter("Splaunch scenario", &[SCENARIO_EXT])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = path
+        .into_path()
+        .map_err(|e| format!("that is not a path this can read: {e}"))?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    from_json(&text).map(Some)
+}
+
 /// Compile and launch the real game into it.
 #[tauri::command]
 pub fn spsc_test(
@@ -764,7 +1198,7 @@ pub fn spsc_test(
     engine: String,
 ) -> Result<u32, String> {
     let script = write_script(&scenario, &player)?;
-    let script_path = scenario_paths();
+    let script_path = script_path();
     if let Some(dir) = script_path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     }
