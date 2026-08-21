@@ -588,7 +588,10 @@ pub fn write_script(s: &Scenario, player: &str) -> Result<String, String> {
     // Local, hosted by us, nobody to wait for.
     key(&mut out, "\t", "IsHost", 1);
     key(&mut out, "\t", "OnlyLocal", 1);
-    key(&mut out, "\t", "StartPosType", 2);
+    /* Spelled the way Zero-K's own mission script spells it. The engine's
+       parser is case-insensitive, so this is not a fix - it is one less
+       difference from the only script we know the engine accepts. */
+    key(&mut out, "\t", "StartposType", 2);
     key(&mut out, "\t", "GameStartDelay", 0);
     key(&mut out, "\t", "NumRestrictions", 0);
 
@@ -639,6 +642,23 @@ pub fn write_script(s: &Scenario, player: &str) -> Result<String, String> {
     for a in allies {
         out.push_str(&format!("\t[ALLYTEAM{a}]\n\t{{\n"));
         key(&mut out, "\t\t", "NumAllies", 0);
+        /* An empty start box, copied from Zero-K's own mission script, which
+           carries exactly these four on every allyteam.
+
+           `StartposType=2` is "choose in game", and a mission does not want the
+           player choosing anything - the commander arrives through
+           `extrastartunits` at the position the author placed it. What the
+           engine does with a type-2 start and no boxes at all is not something
+           we know, and this script has never been launched, so it matches the
+           one that has rather than finding out. */
+        for (name, value) in [
+            ("StartRectTop", 0),
+            ("StartRectBottom", 0),
+            ("StartRectLeft", 1),
+            ("StartRectRight", 1),
+        ] {
+            key(&mut out, "\t\t", name, value);
+        }
         out.push_str("\t}\n");
     }
 
@@ -1158,6 +1178,7 @@ mod tests {
         assert!(s.contains("ShortName=NullAI;"));
         assert!(s.contains("[TEAM0]") && s.contains("[TEAM1]"));
         assert!(s.contains("[ALLYTEAM0]") && s.contains("[ALLYTEAM1]"));
+        assert!(s.contains("StartposType=2;"));
         assert!(s.trim_end().ends_with('}'));
     }
 
@@ -1238,11 +1259,24 @@ mod tests {
     }
 
     /// Every `Key=` at any depth, lowercased.
+    ///
+    /// Split on `;` rather than on newlines, because newlines are not part of
+    /// the engine's grammar: the real script puts four assignments and a
+    /// closing brace on one line, and reading it a line at a time finds one key
+    /// out of four.
     fn keys(script: &str) -> std::collections::HashSet<String> {
         script
-            .lines()
-            .filter_map(|l| l.trim().split_once('='))
-            .map(|(k, _)| k.trim().to_ascii_lowercase())
+            .split(';')
+            .filter_map(|assignment| assignment.split_once('='))
+            .map(|(k, _)| {
+                k.trim_matches(|c: char| c.is_whitespace() || c == '{' || c == '}')
+                    .rsplit(['\n', '\r'])
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase()
+            })
+            .filter(|k| !k.is_empty())
             .collect()
     }
 
@@ -1273,7 +1307,9 @@ mod tests {
            no business emitting. These are the ones that decide whether a local
            game starts at all, and every one of them is in theirs too. */
         for want in ["mapname", "gametype", "myplayername", "ishost", "onlylocal",
-                     "gamestartdelay", "name", "team", "shortname", "allyteam"] {
+                     "gamestartdelay", "name", "team", "shortname", "allyteam",
+                     "startpostype", "numallies",
+                     "startrecttop", "startrectbottom", "startrectleft", "startrectright"] {
             assert!(theirs.contains(want), "the real script does not set {want}");
             assert!(mine.contains(want), "ours does not set {want}");
         }
