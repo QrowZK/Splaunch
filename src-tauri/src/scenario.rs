@@ -680,29 +680,41 @@ mod tests {
 
     #[test]
     fn our_script_parses_the_way_theirs_does() {
-        /* Balanced braces, and every value terminated by a `;` before the next
-           assignment or the end of its section.
+        /* Balanced braces, and every value terminated by a `;` before its
+           section closes.
 
            Deliberately not a per-line rule: the real script puts four pairs on
            one line and closes the section on the same one -
            `StartRectTop=0;		StartRectBottom=0; ... }` - which is the engine
            telling us that newlines are not part of its grammar at all. Ours is
-           formatted for a human to read, and that is free. */
+           formatted for a human to read, and that is free.
+
+           A `=` inside a value is legal and has to stay legal: Zero-K's own
+           custom keys are base64, and base64 pads with `=`. The engine splits
+           an assignment at its first `=` and reads to the `;`, so that is what
+           is checked here. This test used to treat a second `=` as a missing
+           terminator, which was a stricter rule than the engine's and would
+           have rejected every mission payload we now emit. */
         let ours = write_script(&sample(), "Qrow").unwrap();
         for script in [REAL, ours.as_str()] {
             assert_eq!(script.matches('{').count(), script.matches('}').count());
             let bytes = script.as_bytes();
-            for (i, _) in script.match_indices('=') {
+            let mut at = 0;
+            while let Some(offset) = script[at..].find('=') {
+                let i = at + offset;
                 let rest = &bytes[i + 1..];
                 let end = rest
                     .iter()
-                    .position(|c| matches!(c, b';' | b'}' | b'='))
+                    .position(|c| matches!(c, b';' | b'}'))
                     .expect("a value with no terminator");
                 assert_eq!(
                     rest[end], b';',
                     "unterminated value at {:?}",
                     &script[i.saturating_sub(24)..(i + 8).min(script.len())]
                 );
+                // Past this whole assignment, so padding inside the value is
+                // not mistaken for the start of another one.
+                at = i + 1 + end;
             }
         }
     }
