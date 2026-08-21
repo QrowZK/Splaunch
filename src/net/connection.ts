@@ -1,41 +1,18 @@
 /**
- * Bridge to the Rust TCP relay. The relay owns the socket; this module owns
- * nothing but the invoke/listen plumbing.
+ * Whether we are inside the desktop shell.
+ *
+ * This file used to be Shiro's bridge to a TCP relay, and it came across with
+ * the screen: `connect`, `sendLine`, `disconnect`, `passwordHash` and two event
+ * subscriptions, all of them invoking `zks_*` commands that Splaunch's Rust
+ * side does not register. Any call would have thrown at runtime. It also
+ * carried the address of `zero-k.info:8200`, which is the one host the notes
+ * say never to connect to for testing, because repeated failures get the IP
+ * banned.
+ *
+ * Splaunch is not a lobby: no account, no server, nothing to log in to. The
+ * only thing it talks to is Zero-K's public content service, from Rust. So all
+ * that is left of this module is the one function anything actually used.
  */
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-
-export type RelayStatus =
-  | { kind: "connecting" }
-  | { kind: "connected" }
-  | { kind: "disconnected"; reason: string };
-
-export const LIVE = { host: "zero-k.info", port: 8200 } as const;
-
-export function connect(host: string = LIVE.host, port: number = LIVE.port): Promise<void> {
-  return invoke("zks_connect", { host, port });
-}
-
-export function sendLine(line: string): Promise<void> {
-  return invoke("zks_send", { line });
-}
-
-export function disconnect(): Promise<void> {
-  return invoke("zks_disconnect");
-}
-
-/** base64(raw md5 digest) - computed in Rust so we do not hand-roll MD5. */
-export function passwordHash(password: string): Promise<string> {
-  return invoke("zks_password_hash", { password });
-}
-
-export function onLine(cb: (line: string) => void): Promise<UnlistenFn> {
-  return listen<string>("zks://line", e => cb(e.payload));
-}
-
-export function onStatus(cb: (s: RelayStatus) => void): Promise<UnlistenFn> {
-  return listen<RelayStatus>("zks://status", e => cb(e.payload));
-}
 
 /** True when running inside the Tauri shell rather than a plain browser tab. */
 export function inTauri(): boolean {
