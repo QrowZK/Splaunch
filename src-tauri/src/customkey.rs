@@ -109,7 +109,7 @@ pub fn t(v: Table) -> Value {
 /// and backslash would end or escape the Lua string. Control bytes are escaped
 /// because a raw newline in a start script value would end the line.
 fn safe_byte(byte: u8) -> bool {
-    byte >= 0x20 && byte < 0x7F && byte != b'?' && byte != b'"' && byte != b'\\'
+    (0x20..0x7F).contains(&byte) && byte != b'?' && byte != b'"' && byte != b'\\'
 }
 
 /// A Lua string literal whose transport bytes cannot trip either decoder fault.
@@ -233,7 +233,7 @@ pub(crate) fn decode_as_the_game_does(encoded: &str) -> Vec<u8> {
         };
         out.push((((c0 * 4) % 256) | (c1 / 16)) as u8);
         if let Some(c2) = c[2] {
-            out.push(((((c1 * 16) % 256) | ((c2 / 4) % 256))) as u8);
+            out.push((((c1 * 16) % 256) | ((c2 / 4) % 256)) as u8);
             if let Some(c3) = c[3] {
                 // The `% 192` is Zero-K's, and is fault 2.
                 out.push(((((c2 * 64) % 256) % 192) | c3) as u8);
