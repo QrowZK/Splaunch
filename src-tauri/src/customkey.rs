@@ -83,14 +83,6 @@ impl Table {
         let next = self.entries.len() as i64 + 1;
         self.set_index(next, value)
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
 }
 
 /// Convenience: `str_value("x")`, since `Value::Str("x".into())` reads badly in
