@@ -146,16 +146,11 @@ jobs:
             gh release edit dev --title "Splaunch - development build" --notes $notes --prerelease
             if ($LASTEXITCODE -ne 0) { throw "could not update the dev release" }
 
-            # The filename carries the version, so yesterday's zip does not get
-            # overwritten - it just sits there looking current.
-            $keep = $assets | ForEach-Object { Split-Path $_ -Leaf }
-            foreach ($old in (gh release view dev --json assets --jq '.assets[].name')) {
-              if ($old -and $keep -notcontains $old) {
-                "Removing stale asset $old"
-                gh release delete-asset dev $old --yes
-                if ($LASTEXITCODE -ne 0) { throw "could not remove $old" }
-              }
-            }
+            # Older versions are deliberately left in place. Shiro's app
+            # launcher pins an exact URL and its hash, so deleting the asset it
+            # points at would break every copy of Shiro already shipped. Assets
+            # here are immutable once published; the newest is simply the one
+            # with the highest version.
             gh release upload dev $assets --clobber
             if ($LASTEXITCODE -ne 0) { throw "could not upload the assets" }
           } else {
