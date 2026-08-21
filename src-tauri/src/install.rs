@@ -1,8 +1,10 @@
 //! Locating an existing Zero-K installation.
 //!
-//! v1 never downloads content (docs/ARCHITECTURE.md section 7): we reuse the
-//! engine, games and maps of whatever Zero-K install is already on the machine.
-//! That makes this module the only thing standing between login and launch.
+//! Splaunch never downloads content: it reuses the engine, games and maps of
+//! whatever Zero-K install is already on the machine.
+//! That makes this module the first thing standing between an author and a
+//! launch, and `game.rs` the second - this finds the install, that reads what is
+//! inside it.
 //!
 //! Everything here is deliberately pure except `detect()` itself, so the path
 //! logic can be tested without a Zero-K install present.

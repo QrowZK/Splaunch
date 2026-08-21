@@ -21,6 +21,27 @@ const ALLOWED_HOST: &str = "zero-k.info";
 pub struct CatalogueMap {
     pub name: String,
     pub resource_id: u32,
+    /// Map width and height, in elmos, where the catalogue gives them.
+    ///
+    /// The editor placed everything against a hardcoded 8x8 before this: click
+    /// the middle of a 16x16 map and the unit landed in the top-left quarter of
+    /// it. The catalogue carries the size in map units of 512 elmos, so it is
+    /// the cheapest place to get a real answer - reading the map's own header
+    /// means opening its archive, which is `.sd7` and a separate piece of work.
+    ///
+    /// `None` when the catalogue does not say, so the caller can fall back
+    /// visibly rather than silently adopting a wrong number.
+    pub width_elmos: Option<u32>,
+    pub height_elmos: Option<u32>,
+}
+
+/// One side of a map, in elmos, from the catalogue's map-unit figure.
+///
+/// Rejected rather than trusted when it is not a plausible map: the field is
+/// occasionally absent or zero, and a zero would put every unit at the origin.
+fn side_elmos(raw: Option<&str>) -> Option<u32> {
+    let units: u32 = raw?.trim().parse().ok()?;
+    (1..=64).contains(&units).then_some(units * 512)
 }
 
 fn host_allowed(url: &str) -> bool {
@@ -61,7 +82,12 @@ pub fn parse_catalogue(xml: &str) -> Vec<CatalogueMap> {
         let id = element_text(item, "ResourceID").and_then(|s| s.trim().parse().ok());
         if let (Some(name), Some(resource_id)) = (name, id) {
             if !name.is_empty() && resource_id != 0 {
-                out.push(CatalogueMap { name, resource_id });
+                out.push(CatalogueMap {
+                    name,
+                    resource_id,
+                    width_elmos: side_elmos(element_text(item, "Width")),
+                    height_elmos: side_elmos(element_text(item, "Height")),
+                });
             }
         }
         at = start + end;
@@ -114,6 +140,27 @@ mod tests {
         assert_eq!(maps[0].name, "Aberdeen3v3v3");
         assert_eq!(maps[0].resource_id, 7116);
         assert_eq!(maps[1].name, "Comet Catcher Redux");
+    }
+
+    #[test]
+    fn a_map_carries_the_size_the_catalogue_knows() {
+        // Everything used to be placed against a hardcoded 8x8, so a click in
+        // the middle of a 16x16 map landed in the top-left quarter of it.
+        let maps = parse_catalogue(SAMPLE);
+        assert_eq!(maps[0].height_elmos, Some(16 * 512));
+        // The second entry has no dimensions, and says so rather than guessing.
+        assert_eq!(maps[1].height_elmos, None);
+        assert_eq!(maps[1].width_elmos, None);
+    }
+
+    #[test]
+    fn an_implausible_size_is_refused() {
+        // A zero would put every unit at the origin, which looks like a bug in
+        // placement rather than in the catalogue.
+        assert_eq!(side_elmos(Some("0")), None);
+        assert_eq!(side_elmos(Some("")), None);
+        assert_eq!(side_elmos(Some("9999")), None);
+        assert_eq!(side_elmos(Some("12")), Some(12 * 512));
     }
 
     #[test]
